@@ -16,11 +16,10 @@ class GameEngine {
     this.hitstopFrames = 0;
     this.screenShake = 0;
 
-    // Best of 3 Round State Machine
     this.p1Rounds = 0;
     this.p2Rounds = 0;
     this.currentRound = 1;
-    this.roundState = 'ROUND_INTRO'; // ROUND_INTRO, FIGHTING, ROUND_OVER, MATCH_OVER
+    this.roundState = 'ROUND_INTRO';
     this.roundPhaseTimer = 0;
     this.roundBannerText = "";
     this.matchTimer = GameConfig.MATCH.ROUND_TIME_SECONDS * 60;
@@ -30,7 +29,6 @@ class GameEngine {
     this.targetZoom = 1.0;
     this.cameraFocusX = 500;
     this.cameraFocusY = 320;
-    this.slowMoTimer = 0;
     this.timeScale = 1.0;
 
     this.superFreezeTimer = 0;
@@ -63,7 +61,7 @@ class GameEngine {
 
     const modeNames = {
       'AI_NORMAL': 'MODE: ARCADE VS AI (BEST OF 3)',
-      'TRAINING': 'MODE: TRAINING (CONFIG & TECH TEST)',
+      'TRAINING': 'MODE: TRAINING (AIR COMBO & KNOCKDOWN QTE TEST)',
       'PVP': 'MODE: 2 PLAYERS VERSUS (BEST OF 3)'
     };
     document.getElementById('selectedModeLabel').textContent = modeNames[mode] || mode;
@@ -124,7 +122,6 @@ class GameEngine {
     this.matchTimer = GameConfig.MATCH.ROUND_TIME_SECONDS * 60;
     this.cameraZoom = 1.0;
     this.targetZoom = 1.0;
-    this.slowMoTimer = 0;
     this.superFreezeTimer = 0;
 
     if (this.currentMode === 'TRAINING') {
@@ -144,11 +141,12 @@ class GameEngine {
         <h3 style="color:${c1.color};margin-bottom:6px;">${c1.name} COMMAND LIST</h3>
         ${c1.summary}
         <hr style="border-color:#26314d;margin:10px 0;">
-        <b>CORE ENGINE SETTINGS (CONFIG.JS):</b><br>
-        - <b>3-Frame Dash:</b> Double-tap Forward or Back within ${GameConfig.INPUT.DASH_INPUT_WINDOW} frames.<br>
-        - <b>Throw Tech (LP + LK):</b> Press <kbd>LP + LK</kbd> within ${GameConfig.THROW.TECH_WINDOW_FRAMES} frames of being grabbed to trigger a mutual pushback escape.<br>
-        - <b>Best of 3 Format:</b> First player to win ${GameConfig.MATCH.ROUNDS_TO_WIN} rounds wins the match.<br>
-        - <b>Knockdown Duration:</b> ${GameConfig.KNOCKDOWN.DURATION_FRAMES} frames (${(GameConfig.KNOCKDOWN.DURATION_FRAMES / 60).toFixed(1)}s).
+        <b>NEW COMBAT RULES:</b><br>
+        - <b>Launchers &amp; Air Combos:</b> Use <code>2HP</code> or <code>623+P</code> to launch enemies (even from the ground!). Jump up and chain air attacks up to your character's Max Air Combo Time (up to 6.0s).<br>
+        - <b>Knockdown 3-Button QTE:</b> Input the 3 buttons shown above your fighter within 2.0s to wake up immediately. Failing adds a +2.0s penalty (4.0s total).<br>
+        - <b>Grounded OTG Hit Rule:</b> Attacking a downed enemy with <code>2HK</code> or <code>214+K</code> deals OTG damage, and the enemy wakes up immediately (in 0.5s) once the OTG attack finishes.<br>
+        - <b>Ground Reversal (2 Super Bars):</b> Press <kbd>LB</kbd> / <kbd>P</kbd> while knocked down to spend 2 bars and blast away an incoming launcher/OTG attack.<br>
+        - <b>Perfect Block (<kbd>LT</kbd> / <kbd>H</kbd>):</b> Drains only ${GameConfig.PERFECT_BLOCK.DRAIN_PER_FRAME} energy per frame (requires &gt;= 1 Bar).
       `;
       document.getElementById('pause-modal').classList.remove('hidden');
     } else if (this.state === 'PAUSED') {
@@ -176,29 +174,27 @@ class GameEngine {
     this.spawnParticles(caster.x, caster.y - 60, caster.data.color, 35, 11);
   }
 
-  triggerDriveImpactClashZoom() {
-    this.slowMoTimer = GameConfig.DRIVE_IMPACT.CLASH_SLOWMO_FRAMES;
-    this.timeScale = GameConfig.DRIVE_IMPACT.CLASH_SLOWMO_SCALE;
-    this.targetZoom = GameConfig.DRIVE_IMPACT.CLASH_ZOOM;
-    this.cameraFocusX = (this.p1.x + this.p2.x) / 2;
-    this.cameraFocusY = GameConfig.FLOOR_Y - 70;
-    this.screenShake = 12;
-    this.addFloatingText("COUNTER DRIVE IMPACT!!", this.cameraFocusX, this.cameraFocusY - 75, '#ffdf33', 26);
+  triggerReversalEffect(caster) {
+    this.triggerHitstop(10, 10);
+    this.shockwaves.push({
+      x: caster.x,
+      y: GameConfig.FLOOR_Y - 45,
+      radius: 15,
+      maxRadius: 140,
+      color: '#ff0066',
+      life: 22,
+      maxLife: 22
+    });
+    this.spawnParticles(caster.x, GameConfig.FLOOR_Y - 40, '#ff0066', 32, 10);
+    this.addFloatingText("2-BAR GROUND REVERSAL!!", caster.x, caster.y - 120, '#ff0066', 24);
   }
 
-  // Critical: Visual Shockwave & Pushback Feedback on Throw Escape (Throw Tech)
   triggerThrowTechEffect(x, y) {
     this.triggerHitstop(8, 8);
     this.shockwaves.push({ x, y, radius: 10, maxRadius: 95, color: '#00f0ff', life: 18, maxLife: 18 });
     this.spawnParticles(x, y, '#ffdf33', 28, 9);
     this.spawnParticles(x, y, '#00f0ff', 18, 7);
     this.addFloatingText("THROW ESCAPE!", x, y - 55, '#00f0ff', 24);
-  }
-
-  endSlowMo() {
-    this.slowMoTimer = 0;
-    this.timeScale = 1.0;
-    this.targetZoom = 1.0;
   }
 
   triggerHitstop(frames, shake) {
@@ -227,7 +223,7 @@ class GameEngine {
       owner,
       x: owner.x + owner.facing * 45,
       y: owner.y - 62,
-      vx: owner.facing * 8.5,
+      vx: owner.facing * GameConfig.PROJECTILE_SPEED,
       color: owner.data.color,
       dmg: move.dmg,
       hitstun: move.hitstun,
@@ -243,20 +239,27 @@ class GameEngine {
     const input = {
       up: false, down: false, left: false, right: false, back: false, forward: false,
       LP: false, MP: false, HP: false, LK: false, MK: false, HK: false,
-      anyPunch: false, anyKick: false, grabTriggered: false, driveImpactTriggered: false, perfectBlockHold: false
+      anyPunch: false, anyKick: false, grabTriggered: false, reversalTriggered: false, perfectBlockHold: false, dashBtnTriggered: false
     };
     if (this.currentMode === 'TRAINING' || this.roundState !== 'FIGHTING') return input;
 
-    // AI attempts Throw Escape (Throw Tech) occasionally when grabbed
-    if (ai.state === 'THROWN' && Math.random() < 0.06) {
-      input.grabTriggered = true;
+    const dist = Math.abs(target.x - ai.x);
+
+    // AI while Knocked Down: Uses 2-Bar Reversal if player approaches to attack, or inputs QTE buttons
+    if (ai.state === 'KNOCKDOWN') {
+      if (target.state === 'ATTACK' && dist < 130 && ai.superMeter >= GameConfig.REVERSAL.SUPER_COST && Math.random() < 0.08) {
+        input.reversalTriggered = true;
+        return input;
+      }
+      if (!ai.qteFailed && Math.random() < 0.04) {
+        const nextBtn = ai.qteSequence[ai.qteIndex];
+        if (nextBtn) input[nextBtn] = true;
+      }
       return input;
     }
 
-    const dist = Math.abs(target.x - ai.x);
-
-    if (target.state === 'ATTACK' && target.currentMove && target.currentMove.isDriveImpact && ai.state === 'IDLE' && dist < 160 && Math.random() < 0.08) {
-      input.driveImpactTriggered = true;
+    if (ai.state === 'THROWN' && Math.random() < 0.06) {
+      input.grabTriggered = true;
       return input;
     }
 
@@ -270,18 +273,15 @@ class GameEngine {
       input.forward = true;
     } else if (Math.random() < 0.045) {
       const r = Math.random();
-      if (r < 0.25) { input.LP = true; input.anyPunch = true; }
-      else if (r < 0.50) { input.MK = true; input.anyKick = true; }
-      else if (r < 0.72) { input.HP = true; input.anyPunch = true; }
-      else if (r < 0.88) { input.grabTriggered = true; }
-      else { input.driveImpactTriggered = true; }
+      if (r < 0.35) { input.down = true; input.HP = true; input.anyPunch = true; } // Launcher 2HP
+      else if (r < 0.65) { input.down = true; input.HK = true; input.anyKick = true; } // OTG Sweep 2HK
+      else if (r < 0.85) { input.MP = true; input.anyPunch = true; }
+      else { input.grabTriggered = true; }
     }
     return input;
   }
 
-  // Critical: Resolves Best of 3 Round End & Transitions to Next Round or Match Over
   resolveRoundEnd() {
-    this.endSlowMo();
     this.roundState = 'ROUND_OVER';
     this.roundPhaseTimer = GameConfig.MATCH.ROUND_OVER_FRAMES;
     this.triggerHitstop(16, 12);
@@ -310,7 +310,7 @@ class GameEngine {
       return;
     }
 
-    this.cameraZoom += (this.targetZoom - this.cameraZoom) * 0.16;
+    this.cameraZoom += (this.targetZoom - this.cameraZoom) * GameConfig.CAMERA_ZOOM_LERP;
 
     if (this.superFreezeTimer > 0) {
       this.superFreezeTimer--;
@@ -329,15 +329,6 @@ class GameEngine {
       return;
     }
 
-    if (this.slowMoTimer > 0) {
-      this.slowMoTimer--;
-      this.cameraFocusX = (this.p1.x + this.p2.x) / 2;
-      if (this.slowMoTimer <= 0) {
-        this.endSlowMo();
-      }
-    }
-
-    // Handle Best of 3 Round Phases (ROUND_INTRO, ROUND_OVER, MATCH_OVER)
     if (this.roundState === 'ROUND_INTRO') {
       this.roundPhaseTimer--;
       this.p1.animTick++;
@@ -386,20 +377,11 @@ class GameEngine {
       this.p1.update(this.p2, dt, p1In, this);
       this.p2.update(this.p1, dt, p2In, this);
 
-      for (let i = this.projectiles.length - 1; i >= 0; i--) {
-        const pr = this.projectiles[i];
-        pr.x += pr.vx * dt;
-        const target = (pr.owner === this.p1) ? this.p2 : this.p1;
-        if (Math.abs(pr.x - target.x) < 36 && Math.abs(pr.y - (target.y - 55)) < 55 && target.state !== 'KNOCKDOWN') {
-          pr.owner.resolveHit(target, { dmg: pr.dmg, hitstun: pr.hitstun, blockstun: pr.blockstun, push: 5, vx: 3.5, vy: -3.5, type: 'mid' }, this);
-          this.projectiles.splice(i, 1);
-          continue;
-        }
-        if (pr.x < 0 || pr.x > GameConfig.CANVAS_WIDTH) this.projectiles.splice(i, 1);
-      }
-
       if (this.currentMode === 'TRAINING') {
-        if (this.p2.state === 'IDLE') this.p2.hp = this.p2.maxHp;
+        if (this.p2.state === 'IDLE') {
+          this.p2.hp = this.p2.maxHp;
+          this.p2.superMeter = GameConfig.GAUGES.MAX_SUPER;
+        }
         if (this.p1.state === 'IDLE' && this.p1.superMeter <= 0 && !p1In.perfectBlockHold) {
           this.p1.superMeter = GameConfig.GAUGES.MAX_SUPER;
         }
@@ -453,10 +435,6 @@ class GameEngine {
       ctx.beginPath();
       ctx.arc(this.superCaster.x, this.superCaster.y - 60, radius, 0, Math.PI * 2);
       ctx.stroke();
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(this.superCaster.x - radius * 0.7, this.superCaster.y - 60 - radius * 0.7, radius * 1.4, radius * 1.4);
     }
 
     ctx.strokeStyle = '#00f0ff';
@@ -470,18 +448,9 @@ class GameEngine {
     ctx.fillRect(0, 100, GameConfig.STAGE_LEFT, GameConfig.FLOOR_Y - 100);
     ctx.fillRect(GameConfig.STAGE_RIGHT, 100, 55, GameConfig.FLOOR_Y - 100);
 
-    for (const pr of this.projectiles) {
-      ctx.fillStyle = 'rgba(255, 0, 68, 0.6)';
-      ctx.strokeStyle = pr.color;
-      ctx.lineWidth = 2;
-      ctx.fillRect(pr.x - 18, pr.y - 18, 36, 36);
-      ctx.strokeRect(pr.x - 18, pr.y - 18, 36, 36);
-    }
-
     this.p1.draw(ctx);
     this.p2.draw(ctx);
 
-    // Render Throw Tech Shockwave Rings
     for (let i = this.shockwaves.length - 1; i >= 0; i--) {
       const sw = this.shockwaves[i];
       sw.radius += (sw.maxRadius - sw.radius) * 0.22;
@@ -570,11 +539,9 @@ class GameEngine {
     }
   }
 
-  // Draws Best of 3 Round Win Pips next to the timer
   drawRoundWinPips(ctx) {
     const req = GameConfig.MATCH.ROUNDS_TO_WIN;
     for (let i = 0; i < req; i++) {
-      // P1 Round Pips (Left of Timer)
       const p1X = 452 - i * 20;
       ctx.fillStyle = (this.p1Rounds > i) ? '#ffcf33' : '#1b2234';
       ctx.strokeStyle = '#ffffff';
@@ -582,7 +549,6 @@ class GameEngine {
       ctx.fillRect(p1X, 55, 13, 13);
       ctx.strokeRect(p1X, 55, 13, 13);
 
-      // P2 Round Pips (Right of Timer)
       const p2X = 535 + i * 20;
       ctx.fillStyle = (this.p2Rounds > i) ? '#ffcf33' : '#1b2234';
       ctx.fillRect(p2X, 55, 13, 13);
@@ -598,11 +564,11 @@ class GameEngine {
     ctx.fillRect(40, 20, barW, barH);
     ctx.fillRect(560, 20, barW, barH);
 
-    const p1Ratio = this.p1.hp / this.p1.maxHp;
+    const p1Ratio = Math.max(0, this.p1.hp / this.p1.maxHp);
     ctx.fillStyle = p1Ratio > 0.3 ? '#00f0ff' : '#ff2a55';
     ctx.fillRect(40 + barW * (1 - p1Ratio), 20, barW * p1Ratio, barH);
 
-    const p2Ratio = this.p2.hp / this.p2.maxHp;
+    const p2Ratio = Math.max(0, this.p2.hp / this.p2.maxHp);
     ctx.fillStyle = p2Ratio > 0.3 ? '#ff0066' : '#ffae00';
     ctx.fillRect(560, 20, barW * p2Ratio, barH);
 
@@ -615,14 +581,15 @@ class GameEngine {
     this.drawSuperBars(ctx, 960, 50, this.p2.superMeter, true);
     this.drawRoundWinPips(ctx);
 
-    ctx.font = "800 13px 'Segoe UI', sans-serif";
+    ctx.font = "800 12px 'Segoe UI', sans-serif";
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'left';
-    const p1CanPB = this.p1.superMeter >= GameConfig.PERFECT_BLOCK.MIN_SUPER_REQ ? 'READY' : 'NEED 1 BAR';
-    ctx.fillText(`P1: ${this.p1.data.name} | SUPER: ${Math.floor(this.p1.superMeter / 100)}/3 (LT GUARD: ${p1CanPB})`, 40, 84);
+    const p1MaxAir = (this.p1.maxAirComboFrames / 60).toFixed(1);
+    ctx.fillText(`P1: ${this.p1.data.name} | MAX AIR: ${p1MaxAir}s (${this.p1.airDamageMultiplier}x DMG)`, 40, 84);
 
     ctx.textAlign = 'right';
-    ctx.fillText(`P2: ${this.p2.data.name} | SUPER: ${Math.floor(this.p2.superMeter / 100)}/3`, 960, 84);
+    const p2MaxAir = (this.p2.maxAirComboFrames / 60).toFixed(1);
+    ctx.fillText(`P2: ${this.p2.data.name} | MAX AIR: ${p2MaxAir}s (${this.p2.airDamageMultiplier}x DMG)`, 960, 84);
 
     ctx.textAlign = 'center';
     ctx.font = "900 32px 'Segoe UI', sans-serif";
@@ -647,7 +614,7 @@ class GameEngine {
 
     if (this.p1.bannerTimer > 0 && this.p1.lastMoveBanner) {
       ctx.fillStyle = 'rgba(0, 240, 255, 0.18)';
-      ctx.fillRect(162, 92, 300, 28);
+      ctx.fillRect(162, 92, 310, 28);
       ctx.font = "800 14px 'Segoe UI', sans-serif";
       ctx.fillStyle = '#00f0ff';
       ctx.fillText(`> ${this.p1.lastMoveBanner}`, 172, 111);
@@ -663,7 +630,6 @@ class GameEngine {
       ctx.fillText(`DAMAGE: ${this.p1.comboDamage}`, 165, 178);
     }
 
-    // Round Intro Banner ("ROUND X" -> "FIGHT!")
     if (this.roundState === 'ROUND_INTRO') {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
       ctx.fillRect(0, 205, 1000, 110);
@@ -679,7 +645,6 @@ class GameEngine {
       }
     }
 
-    // Round Over Banner ("K.O. - P1 TAKES ROUND X")
     if (this.roundState === 'ROUND_OVER') {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
       ctx.fillRect(0, 205, 1000, 110);
@@ -689,7 +654,6 @@ class GameEngine {
       ctx.fillText(this.roundBannerText, 500, 270);
     }
 
-    // Final Match Winner Banner (Best of 3 Complete)
     if (this.roundState === 'MATCH_OVER' && this.roundWinner) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
       ctx.fillRect(0, 195, 1000, 130);

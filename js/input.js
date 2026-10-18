@@ -7,6 +7,7 @@ class InputManager {
 
     this.p1Buffer = { LP: 0, MP: 0, HP: 0, LK: 0, MK: 0, HK: 0 };
     this.p2Buffer = { LP: 0, MP: 0, HP: 0, LK: 0, MK: 0, HK: 0 };
+    this.p1AnalogHorizState = 0;
 
     window.addEventListener('keydown', (e) => {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
@@ -32,8 +33,24 @@ class InputManager {
     }
   }
 
-  // Critical: 3-frame Throw (LP+LK) chord detector + Dedicated LB (Drive Impact), LT (Perfect Block), & Dash Button
-  resolveButtons(rawJust, rawHold, buffer, shortcutGrab, dedicatedDI, dedicatedPerfectBlock, dedicatedDash) {
+  resolveAnalogHorizontal(axX) {
+    const engage = GameConfig.INPUT.ANALOG_ENGAGE_X;
+    const release = GameConfig.INPUT.ANALOG_RELEASE_X;
+
+    if (this.p1AnalogHorizState === 0) {
+      if (axX >= engage) this.p1AnalogHorizState = 1;
+      else if (axX <= -engage) this.p1AnalogHorizState = -1;
+    } else if (this.p1AnalogHorizState === 1) {
+      if (axX <= -engage) this.p1AnalogHorizState = -1;
+      else if (axX <= release) this.p1AnalogHorizState = 0;
+    } else if (this.p1AnalogHorizState === -1) {
+      if (axX >= engage) this.p1AnalogHorizState = 1;
+      else if (axX >= -release) this.p1AnalogHorizState = 0;
+    }
+    return this.p1AnalogHorizState;
+  }
+
+  resolveButtons(rawJust, rawHold, buffer, shortcutGrab, dedicatedReversal, dedicatedPerfectBlock, dedicatedDash) {
     const win = GameConfig.INPUT.CHORD_WINDOW;
     const btns = ['LP', 'MP', 'HP', 'LK', 'MK', 'HK'];
 
@@ -50,18 +67,18 @@ class InputManager {
         LP: false, MP: false, HP: false, LK: false, MK: false, HK: false,
         anyPunch: false, anyKick: false,
         grabTriggered: true,
-        driveImpactTriggered: false,
+        reversalTriggered: false,
         perfectBlockHold: dedicatedPerfectBlock,
         dashBtnTriggered: false
       };
     }
 
-    if (dedicatedDI) {
+    if (dedicatedReversal) {
       return {
         LP: false, MP: false, HP: false, LK: false, MK: false, HK: false,
         anyPunch: false, anyKick: false,
         grabTriggered: false,
-        driveImpactTriggered: true,
+        reversalTriggered: true,
         perfectBlockHold: dedicatedPerfectBlock,
         dashBtnTriggered: false
       };
@@ -84,7 +101,7 @@ class InputManager {
       anyPunch: out.LP || out.MP || out.HP,
       anyKick: out.LK || out.MK || out.HK,
       grabTriggered: false,
-      driveImpactTriggered: false,
+      reversalTriggered: false,
       perfectBlockHold: dedicatedPerfectBlock,
       dashBtnTriggered: dedicatedDash
     };
@@ -95,6 +112,11 @@ class InputManager {
     let down = !!this.keys['KeyS'];
     let left = !!this.keys['KeyA'];
     let right = !!this.keys['KeyD'];
+
+    if (left && right) {
+      left = false;
+      right = false;
+    }
 
     const rawJust = {
       LP: !!this.justPressed['KeyU'],
@@ -115,9 +137,8 @@ class InputManager {
     };
 
     const shortcutGrab = !!this.justPressed['KeyG'];
-    let dedicatedDI = !!this.justPressed['KeyP'];
-    let dedicatedPerfectBlock = !!this.keys['KeyH'];
-    // Dedicated Dash button on Keyboard: Left Shift or Key F
+    let dedicatedReversal = !!this.justPressed['KeyP'];     // Key P / Xbox LB = Ground Reversal (2 Bars)
+    let dedicatedPerfectBlock = !!this.keys['KeyH'];        // Key H / Xbox LT = Perfect Block
     let dedicatedDash = !!(this.justPressed['ShiftLeft'] || this.justPressed['KeyF']);
 
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -125,12 +146,17 @@ class InputManager {
     if (pad) {
       const axX = pad.axes[0] || 0;
       const axY = pad.axes[1] || 0;
-      if (axY < -0.5 || pad.buttons[12]?.pressed) up = true;
-      if (axY > 0.5 || pad.buttons[13]?.pressed) down = true;
-      if (axX < -0.4 || pad.buttons[14]?.pressed) left = true;
-      if (axX > 0.4 || pad.buttons[15]?.pressed) right = true;
+      const dzY = GameConfig.INPUT.ANALOG_DEADZONE_Y;
+      const trig = GameConfig.INPUT.TRIGGER_THRESHOLD;
 
-      const isPressed = (idx) => !!(pad.buttons[idx]?.pressed || pad.buttons[idx]?.value > 0.35);
+      const analogH = this.resolveAnalogHorizontal(axX);
+
+      if (axY < -dzY || pad.buttons[12]?.pressed) up = true;
+      if (axY > dzY || pad.buttons[13]?.pressed) down = true;
+      if (analogH === -1 || pad.buttons[14]?.pressed) left = true;
+      if (analogH === 1 || pad.buttons[15]?.pressed) right = true;
+
+      const isPressed = (idx) => !!(pad.buttons[idx]?.pressed || pad.buttons[idx]?.value > trig);
       const checkJust = (idx) => {
         const cur = isPressed(idx);
         const was = !!this.prevPadBtns[idx];
@@ -148,13 +174,13 @@ class InputManager {
       if (isPressed(2)) rawHold.LP = true;
       if (isPressed(0)) rawHold.LK = true;
 
-      if (checkJust(4)) dedicatedDI = true;             // LB = Drive Impact
-      if (isPressed(6)) dedicatedPerfectBlock = true;   // LT = Perfect Block
-      if (checkJust(10) || checkJust(8)) dedicatedDash = true; // L3 or View/Select = Dedicated Dash
+      if (checkJust(4)) dedicatedReversal = true;       // Xbox LB = Ground Reversal
+      if (isPressed(6)) dedicatedPerfectBlock = true;   // Xbox LT = Perfect Block
+      if (checkJust(10) || checkJust(8)) dedicatedDash = true;
     }
 
     const resolved = this.resolveButtons(
-      rawJust, rawHold, this.p1Buffer, shortcutGrab, dedicatedDI, dedicatedPerfectBlock, dedicatedDash
+      rawJust, rawHold, this.p1Buffer, shortcutGrab, dedicatedReversal, dedicatedPerfectBlock, dedicatedDash
     );
 
     const facingRight = (facing === 1);
@@ -169,8 +195,13 @@ class InputManager {
   getP2Input(facing) {
     const up = !!this.keys['ArrowUp'];
     const down = !!this.keys['ArrowDown'];
-    const left = !!this.keys['ArrowLeft'];
-    const right = !!this.keys['ArrowRight'];
+    let left = !!this.keys['ArrowLeft'];
+    let right = !!this.keys['ArrowRight'];
+
+    if (left && right) {
+      left = false;
+      right = false;
+    }
 
     const rawJust = {
       LP: !!(this.justPressed['Numpad4'] || this.justPressed['Digit4']),
@@ -186,12 +217,12 @@ class InputManager {
       LK: !!(this.keys['Numpad1'] || this.keys['Digit1'])
     };
 
-    const dedicatedDI = !!(this.justPressed['Numpad7'] || this.justPressed['Digit7']);
+    const dedicatedReversal = !!(this.justPressed['Numpad7'] || this.justPressed['Digit7']);
     const dedicatedPerfectBlock = !!(this.keys['Numpad8'] || this.keys['Digit8']);
     const dedicatedDash = !!(this.justPressed['Numpad9'] || this.justPressed['Digit9'] || this.justPressed['ShiftRight']);
 
     const resolved = this.resolveButtons(
-      rawJust, rawHold, this.p2Buffer, false, dedicatedDI, dedicatedPerfectBlock, dedicatedDash
+      rawJust, rawHold, this.p2Buffer, false, dedicatedReversal, dedicatedPerfectBlock, dedicatedDash
     );
 
     const facingRight = (facing === 1);
@@ -210,8 +241,11 @@ class MotionBuffer {
     this.absHistory = [];
     this.lastDir = 5;
     this.visualHistory = [];
-    this.lastTapDir = 0;
-    this.lastTapReleaseFrame = -99;
+
+    this.lastHorizDir = 5;
+    this.lastHorizTapDir = 0;
+    this.lastHorizPressFrame = -99;
+    this.lastHorizReleaseFrame = -99;
   }
 
   toNumpad(up, down, negH, posH) {
@@ -237,20 +271,39 @@ class MotionBuffer {
   record(input, frameCount) {
     const relDir = this.toNumpad(input.up, input.down, input.back, input.forward);
     const absDir = this.toNumpad(input.up, input.down, input.left, input.right);
+    const horizDir = input.forward ? 6 : (input.back ? 4 : 5);
     let dashTriggered = 0;
 
-    // 1. Check Dedicated Dash Button (Shift / Key F / Xbox L3)
     if (input.dashBtnTriggered) {
       dashTriggered = input.back ? 4 : 6;
       this.pushVisual(dashTriggered === 6 ? 'DASH (BTN)' : 'BACKDASH (BTN)', '#00ff88');
     }
 
-    if (relDir !== this.lastDir) {
-      if (relDir === 5 && (this.lastDir === 6 || this.lastDir === 4)) {
-        this.lastTapDir = this.lastDir;
-        this.lastTapReleaseFrame = frameCount;
-      }
+    if (horizDir !== this.lastHorizDir) {
+      if (horizDir === 5 && (this.lastHorizDir === 6 || this.lastHorizDir === 4)) {
+        this.lastHorizReleaseFrame = frameCount;
+      } else if ((horizDir === 6 || horizDir === 4) && this.lastHorizDir === 5 && !input.up) {
+        const pressDelta = frameCount - this.lastHorizPressFrame;
+        const releaseDelta = frameCount - this.lastHorizReleaseFrame;
 
+        if (
+          horizDir === this.lastHorizTapDir &&
+          pressDelta <= GameConfig.DASH.DOUBLE_TAP_PRESS_WINDOW &&
+          releaseDelta <= GameConfig.DASH.DOUBLE_TAP_RELEASE_WINDOW
+        ) {
+          dashTriggered = horizDir;
+          this.lastHorizTapDir = 0;
+          this.lastHorizPressFrame = -99;
+          this.pushVisual(dashTriggered === 6 ? 'DASH (66)' : 'BACKDASH (44)', '#00ff88');
+        } else {
+          this.lastHorizTapDir = horizDir;
+          this.lastHorizPressFrame = frameCount;
+        }
+      }
+      this.lastHorizDir = horizDir;
+    }
+
+    if (relDir !== this.lastDir) {
       if (relDir !== 5) {
         this.dirHistory.push({ dir: relDir, frame: frameCount });
         this.absHistory.push({ dir: absDir, frame: frameCount });
@@ -258,25 +311,14 @@ class MotionBuffer {
         if (this.absHistory.length > 28) this.absHistory.shift();
 
         this.pushVisual(this.dirToText(absDir), '#00f0ff');
-
-        // 2. Check Double-Tap Dash (Neutral gap between release of 1st tap and press of 2nd tap <= DASH_INPUT_WINDOW)
-        if ((relDir === 6 || relDir === 4) && this.lastDir === 5) {
-          const dashWin = GameConfig.INPUT.DASH_INPUT_WINDOW;
-          const neutralGap = frameCount - this.lastTapReleaseFrame;
-          if (relDir === this.lastTapDir && neutralGap <= dashWin) {
-            dashTriggered = relDir;
-            this.lastTapDir = 0;
-            this.lastTapReleaseFrame = -99;
-          }
-        }
       }
       this.lastDir = relDir;
     }
 
     if (input.grabTriggered) {
       this.pushVisual('THROW (LP+LK)', '#ffaa00');
-    } else if (input.driveImpactTriggered) {
-      this.pushVisual('DRIVE IMPACT (LB)', '#ff0066');
+    } else if (input.reversalTriggered) {
+      this.pushVisual('REVERSAL (LB)', '#ff0066');
     } else {
       if (input.LP) this.pushVisual('LP', '#66e0ff');
       if (input.MP) this.pushVisual('MP', '#ffdf5d');

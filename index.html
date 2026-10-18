@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IRON DRIVE ENGINE - Skeletal Box Fighting System</title>
+  <title>IRON DRIVE ENGINE - Air Combo & Knockdown QTE System</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,9 +12,9 @@
     <!-- MAIN MENU -->
     <div id="screen-main-menu" class="screen active">
       <div class="menu-content">
-        <div class="game-badge">PERMANENT SKELETAL RIG ENGINE</div>
+        <div class="game-badge">AIR COMBO &amp; GROUND REVERSAL ENGINE</div>
         <h1 class="game-title">IRON DRIVE</h1>
-        <p class="game-subtitle">BEST OF 3 / THROW TECH / LT PERFECT BLOCK / LB DRIVE IMPACT</p>
+        <p class="game-subtitle">LAUNCHERS / 6S AIR COMBOS / KNOCKDOWN QTE / 2-BAR REVERSAL</p>
 
         <div class="menu-buttons">
           <button class="menu-btn primary" onclick="Engine.openCharSelect('AI_NORMAL')">ARCADE VS AI</button>
@@ -59,7 +59,7 @@
         <button class="small-btn danger" onclick="Engine.returnToMenu()">MAIN MENU</button>
       </div>
       <div class="match-bar-right">
-        <span>SUPERS: <code>236236+P</code> (LV1) | <code>236236+K</code> (LV2) | <code>214214+P</code> (LV3)</span>
+        <span>LAUNCH: <code>2HP</code> / <code>623P</code> | OTG HIT: <code>2HK</code> / <code>214K</code> | GROUND REVERSAL (2 BARS): <code>LB</code> / <kbd>P</kbd></span>
       </div>
     </div>
 
@@ -81,19 +81,19 @@
       </div>
     </div>
 
-    <!-- BOTTOM CONTROL GUIDE (WITH DASH BUTTON RESTORED) -->
+    <!-- BOTTOM CONTROL GUIDE -->
     <div id="bottom-guide" class="hidden">
       <div class="guide-col">
-        <strong>MOVE &amp; DASH:</strong> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> | <strong>Dash:</strong> <kbd>D,D</kbd> / <kbd>A,A</kbd> or <kbd>Shift</kbd> / <kbd>F</kbd> (Xbox: <kbd>L3</kbd>) |
-        <strong>PUNCH:</strong> <kbd>U</kbd><kbd>I</kbd><kbd>O</kbd> | <strong>KICK:</strong> <kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>
+        <strong>MOVE &amp; DASH:</strong> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> | <strong>Dash:</strong> <kbd>D,D</kbd> / <kbd>Shift</kbd> / <kbd>F</kbd> |
+        <strong>PUNCH:</strong> <kbd>U</kbd>=LP <kbd>I</kbd>=MP <kbd>O</kbd>=HP | <strong>KICK:</strong> <kbd>J</kbd>=LK <kbd>K</kbd>=MK <kbd>L</kbd>=HK
       </div>
       <div class="guide-col">
-        <strong>SPECIALS:</strong> Throw/Tech = <kbd>LP+LK</kbd> (<kbd>U+J</kbd>) | Perfect Block = <kbd>LT</kbd> (<kbd>H</kbd>) | Drive Impact = <kbd>LB</kbd> (<kbd>P</kbd>)
+        <strong>SYSTEM:</strong> Throw = <kbd>LP+LK</kbd> (<kbd>U+J</kbd>) | Perfect Block = <kbd>LT</kbd> (<kbd>H</kbd>) | Ground Reversal (2 Bars) = <kbd>LB</kbd> (<kbd>P</kbd>)
       </div>
     </div>
   </div>
 
-  <!-- Load Config & Individual Character Files -->
+  <!-- Load Master Config & Individual Character Files -->
   <script src="js/config.js"></script>
   <script src="characters/ren.js"></script>
   <script src="characters/kira.js"></script>
@@ -102,8 +102,5 @@
   <script src="js/input.js"></script>
   <script src="js/fighter.js"></script>
   <script src="js/engine.js"></script>
-
-  <!-- TEMPORARY LIVE CONFIG PANEL (Delete this single line later to remove the panel) -->
-  <script src="js/temp_config_panel.js"></script>
 </body>
 </html>
