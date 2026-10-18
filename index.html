@@ -98,9 +98,18 @@
   <script src="characters/ren.js"></script>
   <script src="characters/kira.js"></script>
   <script src="characters/titan.js"></script>
-  <!-- Load Core Engine Modules -->
+
+  <!-- Load Input Manager -->
   <script src="js/input.js"></script>
-  <script src="js/fighter.js"></script>
-  <script src="js/engine.js"></script>
+
+  <!-- Load Modular Fighter Files (Core -> Combat -> Render) -->
+  <script src="js/fighter_core.js"></script>
+  <script src="js/fighter_combat.js"></script>
+  <script src="js/fighter_render.js"></script>
+
+  <!-- Load Modular Engine Files (Core -> UI/AI -> Render/HUD) -->
+  <script src="js/engine_core.js"></script>
+  <script src="js/engine_ui.js"></script>
+  <script src="js/engine_render.js"></script>
 </body>
 </html>
