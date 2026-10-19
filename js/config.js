@@ -2,18 +2,21 @@
 window.CHARACTERS = window.CHARACTERS || {};
 
 window.GameConfig = {
+  // Global Game Pace: Reduced by 35% (1.00 - 0.35 = 0.65)
+  GAME_SPEED: 0.65,
+
   // 1. Stage & Camera Dimensions
   CANVAS_WIDTH: 1000,
   CANVAS_HEIGHT: 540,
   FLOOR_Y: 465,
   STAGE_LEFT: 55,
   STAGE_RIGHT: 945,
-  CAMERA_ZOOM_LERP: 0.16,
+  CAMERA_ZOOM_LERP: 0.14,
   FIGHTER_PUSHBOX_WIDTH: 48,
 
   // 2. Global Physics
   GRAVITY: 0.44,
-  AIR_COMBO_GRAVITY: 0.24,        // Reduced gravity during active Air Combo window
+  AIR_COMBO_GRAVITY: 0.24,
   FRICTION: 0.78,
   CROUCH_FRICTION: 0.60,
   JUMP_FORWARD_SPEED_MULT: 1.65,
@@ -27,8 +30,7 @@ window.GameConfig = {
     BACKWARD_SPEED_MULT: 0.82
   },
 
-  // 4. Character Base Stats & Air Combo Scaling (Max 6.0 Seconds)
-  // Longer air combo duration = lower air damage multiplier
+  // 4. Character Base Stats & Air Combo Scaling
   CHARACTER_STATS: {
     REN: {
       hp: 1000,
@@ -37,8 +39,8 @@ window.GameConfig = {
       dashForwardSpeed: 9.6,
       dashBackwardSpeed: 8.2,
       jumpForce: 11.4,
-      maxAirComboSeconds: 4.5,    // 4.5s max air combo window
-      airDamageMultiplier: 0.75   // Balanced air damage
+      maxAirComboSeconds: 4.5,
+      airDamageMultiplier: 0.75
     },
     KIRA: {
       hp: 950,
@@ -47,45 +49,45 @@ window.GameConfig = {
       dashForwardSpeed: 10.8,
       dashBackwardSpeed: 9.2,
       jumpForce: 11.8,
-      maxAirComboSeconds: 6.0,    // Maximum 6.0s air combo window
-      airDamageMultiplier: 0.50   // Lightest air damage due to longest 6.0s duration
+      maxAirComboSeconds: 6.0,
+      airDamageMultiplier: 0.50
     },
     TITAN: {
       hp: 1150,
-      walkForwardSpeed: 1.75,
-      walkBackwardSpeed: 1.45,
-      dashForwardSpeed: 8.5,
-      dashBackwardSpeed: 7.2,
-      jumpForce: 11.0,
-      maxAirComboSeconds: 3.0,    // 3.0s air combo window
-      airDamageMultiplier: 1.15   // Heaviest air damage due to short duration
+      walkForwardSpeed: 1.95,
+      walkBackwardSpeed: 1.60,
+      dashForwardSpeed: 8.8,
+      dashBackwardSpeed: 7.5,
+      jumpForce: 11.2,
+      maxAirComboSeconds: 3.5,
+      airDamageMultiplier: 1.15
     }
   },
 
-  // 5. Air Combo Physics & Suspension Settings
+  // 5. Air Combo Settings
   AIR_COMBO: {
-    MAX_CAP_SECONDS: 6.0,         // Hard cap of 6.0 seconds
-    ATTACKER_AIR_BOUNCE_VY: -4.8, // Upward boost given to attacker on air hit to stay airborne
-    VICTIM_AIR_FLOAT_VY: -5.4,    // Upward float given to victim on air hit while timer remains
-    VICTIM_AIR_PUSH_VX: 2.2       // Horizontal drift during air combo
+    MAX_CAP_SECONDS: 6.0,
+    ATTACKER_AIR_BOUNCE_VY: -4.8,
+    VICTIM_AIR_FLOAT_VY: -5.4,
+    VICTIM_AIR_PUSH_VX: 2.2
   },
 
-  // 6. Dash Settings (Double-Tap & Button Dash)
+  // 6. Dash Settings
   DASH: {
     FORWARD_DURATION_FRAMES: 14,
     BACKWARD_DURATION_FRAMES: 13,
     END_VELOCITY_DAMPING: 0.50,
     AFTERIMAGE_INTERVAL_FRAMES: 3,
     AFTERIMAGE_FADE_SPEED: 0.08,
-    DOUBLE_TAP_PRESS_WINDOW: 20,
-    DOUBLE_TAP_RELEASE_WINDOW: 12
+    DOUBLE_TAP_PRESS_WINDOW: 24,
+    DOUBLE_TAP_RELEASE_WINDOW: 15
   },
 
-  // 7. Input & Analog Stick Sensitivity
+  // 7. Input & Analog Stick Sensitivity (Expanded slightly to match 0.65x game pace)
   INPUT: {
-    CHORD_WINDOW: 3,
-    MOTION_BUFFER_WINDOW: 32,
-    SUPER_BUFFER_WINDOW: 50,
+    CHORD_WINDOW: 4,
+    MOTION_BUFFER_WINDOW: 40,
+    SUPER_BUFFER_WINDOW: 60,
     ANALOG_DEADZONE_Y: 0.48,
     ANALOG_ENGAGE_X: 0.45,
     ANALOG_RELEASE_X: 0.28,
@@ -104,16 +106,16 @@ window.GameConfig = {
 
   // 9. Knockdown QTE, Penalty & 0.5s Wake-up Settings
   KNOCKDOWN: {
-    QTE_WINDOW_SECONDS: 2.0,      // 2.0 seconds (120 frames) to input the 3-button sequence
-    PENALTY_ADD_SECONDS: 2.0,     // +2.0 seconds penalty if QTE is missed (Total = 4.0 seconds)
-    WAKEUP_DURATION_SECONDS: 0.5, // Exact 0.5 seconds (30 frames) wake-up animation
-    QTE_SEQUENCE_LENGTH: 3,       // Number of buttons in the wake-up prompt
+    QTE_WINDOW_SECONDS: 2.0,
+    PENALTY_ADD_SECONDS: 2.0,
+    WAKEUP_DURATION_SECONDS: 0.5,
+    QTE_SEQUENCE_LENGTH: 3,
     QTE_POOL: ['LP', 'MP', 'HP', 'LK', 'MK', 'HK']
   },
 
-  // 10. Ground Reversal Settings (Counter while Knocked Down - Costs 2 Super Bars)
+  // 10. Ground Reversal Settings (Costs 2 Super Bars)
   REVERSAL: {
-    SUPER_COST: 200,              // Uses 2 full bars (200 points) from the 3-bar Super Meter
+    SUPER_COST: 200,
     DAMAGE: 115,
     STARTUP: 3,
     ACTIVE: 12,
@@ -130,8 +132,8 @@ window.GameConfig = {
   },
 
   PERFECT_BLOCK: {
-    MIN_SUPER_REQ: 100,             // Requires >= 1 Super Bar (100 points) to activate
-    DRAIN_PER_FRAME: 0.546,         // Updated energy drain rate: 0.546 per frame
+    MIN_SUPER_REQ: 100,
+    DRAIN_PER_FRAME: 0.546,
     CHIP_DAMAGE_MAX_HP_PERCENT: 0.15,
     PUSHBACK_MULT: 0.40,
     BLOCKS_SUPERS: true,
@@ -146,7 +148,7 @@ window.GameConfig = {
     RECOVERY: 18,
     REACH: 76,
     EXEC_DURATION_FRAMES: 42,
-    TECH_WINDOW_FRAMES: 12,
+    TECH_WINDOW_FRAMES: 14,
     TECH_STATE_FRAMES: 24,
     TECH_PUSHBACK_VX: 9.5
   },

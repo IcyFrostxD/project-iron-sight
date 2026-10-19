@@ -10,6 +10,8 @@ class Fighter {
     this.vy = 0;
     this.facing = facing;
 
+    this.normalizeCharacterMoves();
+
     this.maxHp = this.data.hp;
     this.hp = this.maxHp;
     this.syncLiveConfig();
@@ -18,13 +20,16 @@ class Fighter {
     this.drive = GameConfig.GAUGES.MAX_DRIVE;
     this.superMeter = GameConfig.GAUGES.INITIAL_SUPER;
 
-    // States: IDLE, WALK, CROUCH, JUMP, DASH, ATTACK, THROW_EXEC, THROWN, THROW_TECH,
-    // HIT, BLOCK, PERFECT_BLOCK, AIR_HIT, KNOCKDOWN, OTG_HIT, WAKEUP, VICTORY
     this.state = 'IDLE';
     this.stateTimer = 0;
     this.dashTimer = 0;
     this.dashDir = 1;
     this.afterimages = [];
+
+    this.airDashCount = 0;
+    this.maxAirDashes = 1;
+    this.usedAirUppercut = false;
+    this.airActionsLocked = false;
 
     this.currentMoveKey = null;
     this.currentMove = null;
@@ -33,11 +38,20 @@ class Fighter {
     this.hasDealtHit = false;
     this.hasAirAttacked = false;
 
-    // Air Combo Window Tracking (Controlled by Attacker's maxAirComboFrames)
+    this.groundChainList = [];
+    this.groundPushCount = 0;
+    this.altLimb = false;
+
     this.airComboFramesLeft = 0;
     this.airComboMaxFrames = 0;
 
-    // Knockdown QTE & OTG Tracking
+    this.launchCount = 0;
+    this.autoWakeupActive = false;
+    this.autoWakeupFramesLeft = 0;
+    this.autoWakeupLabel = "";
+    this.launchImmune = false;
+    this.launchImmuneTimer = 0;
+
     this.knockdownElapsed = 0;
     this.qteSequence = [];
     this.qteIndex = 0;
@@ -62,47 +76,84 @@ class Fighter {
     this.animTick = 0;
   }
 
+  normalizeCharacterMoves() {
+    const m = this.data.moves;
+
+    if (m['236236P'] && (!m['623P'] || !m['623P'].isUppercut)) {
+      m['623P'] = Object.assign({}, m['236236P'], {
+        name: m['236236P'].name.replace('236236P', '623P')
+      });
+      delete m['236236P'];
+    } else if (m['623P']) {
+      m['623P'].isUppercut = true;
+      m['623P'].locksAirActions = true;
+      m['623P'].selfLaunchVY = m['623P'].selfLaunchVY || -9.8;
+      m['623P'].selfForwardVX = m['623P'].selfForwardVX || 3.2;
+    }
+
+    if (m['8_236236P'] && !m['8_623P']) {
+      m['8_623P'] = Object.assign({}, m['8_236236P'], {
+        name: m['8_236236P'].name.replace('236236P', '623P')
+      });
+      delete m['8_236236P'];
+    } else if (!m['8_623P'] && m['623P']) {
+      m['8_623P'] = Object.assign({}, m['623P'], {
+        name: 'Air ' + m['623P'].name,
+        airMove: true,
+        isUppercut: true,
+        locksAirActions: true,
+        selfLaunchVY: -8.5,
+        selfForwardVX: 3.0,
+        type: 'overhead'
+      });
+    }
+
+    if (m['82HK']) {
+      m['82HK'].hitsGrounded = false;
+      m['82HK'].isOtgStrike = false;
+    }
+
+    Object.keys(m).forEach(key => {
+      const move = m[key];
+      const isFloorSlam = (key === '2HP' || move.isFloorSlam);
+      const isGroundHardKick = (!move.airMove && (key === '2HK' || key === '5HK'));
+      if (isFloorSlam) {
+        move.hitsGrounded = true;
+        move.isFloorSlam = true;
+        move.launcher = true;
+        move.groundBounce = true;
+      } else if (isGroundHardKick) {
+        move.hitsGrounded = true;
+        move.isOtgStrike = true;
+      } else {
+        move.hitsGrounded = false;
+        move.isOtgStrike = false;
+      }
+    });
+  }
+
   syncLiveConfig() {
-    const cfgStats = GameConfig.CHARACTER_STATS[this.charKey] || {};
+    const cfgStats = (GameConfig.CHARACTER_STATS && GameConfig.CHARACTER_STATS[this.charKey]) || {};
     const prevMax = this.maxHp || this.data.hp;
     this.maxHp = cfgStats.hp || this.data.hp;
     if (this.hp > this.maxHp || this.hp === prevMax) {
       this.hp = this.maxHp;
     }
 
-    this.walkForwardSpeed = (cfgStats.walkForwardSpeed || this.data.walkSpeed) *
-                            GameConfig.WALK.GLOBAL_SPEED_MULT * GameConfig.WALK.FORWARD_SPEED_MULT;
-    this.walkBackwardSpeed = (cfgStats.walkBackwardSpeed || (this.data.walkSpeed * 0.85)) *
-                             GameConfig.WALK.GLOBAL_SPEED_MULT * GameConfig.WALK.BACKWARD_SPEED_MULT;
+    const walkGlobal = (GameConfig.WALK && GameConfig.WALK.GLOBAL_SPEED_MULT) || 1.0;
+    const walkFwdMult = (GameConfig.WALK && GameConfig.WALK.FORWARD_SPEED_MULT) || 1.0;
+    const walkBwdMult = (GameConfig.WALK && GameConfig.WALK.BACKWARD_SPEED_MULT) || 0.82;
+
+    this.walkForwardSpeed = (cfgStats.walkForwardSpeed || this.data.walkSpeed) * walkGlobal * walkFwdMult;
+    this.walkBackwardSpeed = (cfgStats.walkBackwardSpeed || (this.data.walkSpeed * 0.85)) * walkGlobal * walkBwdMult;
     this.dashForwardSpeed = cfgStats.dashForwardSpeed || this.data.dashSpeed;
     this.dashBackwardSpeed = cfgStats.dashBackwardSpeed || (this.data.dashSpeed * 0.85);
     this.jumpForce = cfgStats.jumpForce || this.data.jumpForce;
 
-    // Character-specific Air Combo duration (capped at 6.0s) and air damage multiplier
-    const maxSec = Math.min(GameConfig.AIR_COMBO.MAX_CAP_SECONDS, cfgStats.maxAirComboSeconds || 4.0);
+    const maxCapSec = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.MAX_CAP_SECONDS) || 6.0;
+    const maxSec = Math.min(maxCapSec, cfgStats.maxAirComboSeconds || 4.0);
     this.maxAirComboFrames = Math.round(maxSec * 60);
     this.airDamageMultiplier = cfgStats.airDamageMultiplier || 0.75;
-
-    if (this.data.moves['GRAB']) {
-      Object.assign(this.data.moves['GRAB'], {
-        startup: GameConfig.THROW.STARTUP,
-        active: GameConfig.THROW.ACTIVE,
-        recovery: GameConfig.THROW.RECOVERY,
-        dmg: GameConfig.THROW.DAMAGE,
-        reach: GameConfig.THROW.REACH
-      });
-    }
-    if (this.data.moves['REVERSAL']) {
-      Object.assign(this.data.moves['REVERSAL'], {
-        startup: GameConfig.REVERSAL.STARTUP,
-        active: GameConfig.REVERSAL.ACTIVE,
-        recovery: GameConfig.REVERSAL.RECOVERY,
-        dmg: GameConfig.REVERSAL.DAMAGE,
-        reach: GameConfig.REVERSAL.REACH,
-        vx: GameConfig.REVERSAL.KNOCKBACK_VX,
-        vy: GameConfig.REVERSAL.LAUNCH_VY
-      });
-    }
   }
 
   resetForNextRound(x, facing, keepSuper) {
@@ -119,10 +170,20 @@ class Fighter {
     }
     this.state = 'IDLE';
     this.stateTimer = 0;
+    this.airDashCount = 0;
+    this.usedAirUppercut = false;
+    this.airActionsLocked = false;
     this.currentMove = null;
     this.currentMoveKey = null;
+    this.groundChainList = [];
+    this.groundPushCount = 0;
     this.throwTarget = null;
     this.airComboFramesLeft = 0;
+    this.launchCount = 0;
+    this.autoWakeupActive = false;
+    this.autoWakeupFramesLeft = 0;
+    this.launchImmune = false;
+    this.launchImmuneTimer = 0;
     this.comboCount = 0;
     this.comboDamage = 0;
     this.juggleCount = 0;
@@ -130,21 +191,44 @@ class Fighter {
     this.afterimages = [];
   }
 
-  // Critical: Enters Knockdown and generates a random 3-button QTE sequence (e.g., LP -> HK -> LK)
-  enterKnockdown() {
+  enterKnockdown(mode = 'QTE', fixedSeconds = 1.0) {
     this.state = 'KNOCKDOWN';
     this.y = GameConfig.FLOOR_Y;
     this.vy = 0;
     this.currentMove = null;
     this.currentMoveKey = null;
+    this.groundChainList = [];
     this.airComboFramesLeft = 0;
+    this.usedAirUppercut = false;
+    this.airActionsLocked = false;
     this.knockdownElapsed = 0;
     this.qteIndex = 0;
     this.qteFailed = false;
     this.wasHitOnGround = false;
 
-    const pool = GameConfig.KNOCKDOWN.QTE_POOL;
-    const len = GameConfig.KNOCKDOWN.QTE_SEQUENCE_LENGTH;
+    if (mode === 'FIXED') {
+      const wakeSec = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS) || 0.5;
+      const lieSec = Math.max(0.2, fixedSeconds - wakeSec);
+      this.autoWakeupActive = true;
+      this.autoWakeupFramesLeft = Math.round(lieSec * 60);
+      this.autoWakeupLabel = `CRUSH KNOCKDOWN (${fixedSeconds.toFixed(1)}s)`;
+      this.qteSequence = [];
+      return;
+    }
+
+    if (this.launchCount >= 2 && mode !== 'SWEEP_QTE') {
+      this.autoWakeupActive = true;
+      this.autoWakeupFramesLeft = 30;
+      this.autoWakeupLabel = "2ND LAUNCH: AUTO WAKEUP (1.0s)";
+      this.launchImmune = true;
+      this.launchImmuneTimer = 300;
+      this.qteSequence = [];
+      return;
+    }
+
+    this.autoWakeupActive = false;
+    const pool = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.QTE_POOL) || ['LP', 'MP', 'HP', 'LK', 'MK', 'HK'];
+    const len = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.QTE_SEQUENCE_LENGTH) || 3;
     this.qteSequence = [];
     for (let i = 0; i < len; i++) {
       const randBtn = pool[Math.floor(Math.random() * pool.length)];
@@ -152,14 +236,15 @@ class Fighter {
     }
   }
 
-  // Critical: Transitions into the 0.5-second (30 frames) Wake-up Animation
   enterWakeup(engine, labelText) {
     this.state = 'WAKEUP';
-    this.stateTimer = Math.round(GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS * 60);
+    const wakeSec = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS) || 0.5;
+    this.stateTimer = Math.round(wakeSec * 60);
     this.y = GameConfig.FLOOR_Y;
     this.vx = 0;
     this.vy = 0;
     this.wasHitOnGround = false;
+    this.autoWakeupActive = false;
     if (engine && labelText) {
       engine.addFloatingText(labelText, this.x, this.y - 105, '#00ff88', 18);
     }
@@ -169,9 +254,37 @@ class Fighter {
     return this.state === 'ATTACK' && this.currentMove && this.hitConnected && this.currentMove.cancel;
   }
 
-  startMove(moveKey) {
+  canChainGroundNormal(nextBtn) {
+    if (!this.canCancel() || !this.currentMoveKey) return false;
+    if (this.groundChainList.length >= 6) return false;
+
+    const lastBtn = this.groundChainList[this.groundChainList.length - 1] || '';
+    const lpCount = this.groundChainList.filter(b => b === 'LP').length;
+    const lkCount = this.groundChainList.filter(b => b === 'LK').length;
+
+    if (lastBtn === 'LP' || lastBtn === 'LK') {
+      if (nextBtn === 'LP' && lpCount >= 3) return false;
+      if (nextBtn === 'LK' && lkCount >= 3) return false;
+      return true;
+    }
+    if (lastBtn === 'MP') {
+      return nextBtn === 'LK' || nextBtn === 'MK' || nextBtn === 'HP' || nextBtn === 'HK';
+    }
+    if (lastBtn === 'MK') {
+      return nextBtn === 'LP' || nextBtn === 'MP' || nextBtn === 'HP' || nextBtn === 'HK';
+    }
+    return false;
+  }
+
+  startMove(moveKey, btnTag = null) {
     const moveObj = this.data.moves[moveKey];
     if (!moveObj) return false;
+
+    if (this.currentMoveKey === moveKey) {
+      this.altLimb = !this.altLimb;
+    } else {
+      this.altLimb = false;
+    }
 
     this.currentMoveKey = moveKey;
     this.currentMove = moveObj;
@@ -184,7 +297,28 @@ class Fighter {
       this.hasAirAttacked = true;
     }
 
-    this.lastMoveBanner = moveObj.name;
+    if (moveObj.isUppercut) {
+      this.usedAirUppercut = true;
+      this.airActionsLocked = true;
+      this.y = Math.min(this.y, GameConfig.FLOOR_Y - 6);
+      this.vy = moveObj.selfLaunchVY || -9.5;
+      this.vx = this.facing * (moveObj.selfForwardVX || 3.0);
+    }
+
+    if (moveObj.isJumpCrush) {
+      this.vy = moveObj.vy || 9.5;
+      this.vx = this.facing * (moveObj.vx || 4.5);
+    }
+
+    if (btnTag) {
+      this.groundChainList.push(btnTag);
+      this.lastMoveBanner = this.groundChainList.length > 1
+        ? `CHAIN: ${this.groundChainList.join(' > ')}`
+        : moveObj.name;
+    } else {
+      this.lastMoveBanner = moveObj.name;
+    }
+
     this.bannerTimer = 70;
     return true;
   }
@@ -214,6 +348,14 @@ class Fighter {
     engine.triggerThrowTechEffect(midX, midY);
   }
 
+  isUppercutMotion(frameCount) {
+    const win = GameConfig.INPUT.MOTION_BUFFER_WINDOW;
+    return (
+      this.motionBuffer.checkHistorySequence(this.motionBuffer.dirHistory, [6, 2, 6], frameCount, win) ||
+      this.motionBuffer.checkHistorySequence(this.motionBuffer.absHistory, [6, 2, 6], frameCount, win)
+    );
+  }
+
   processInput(input, frameCount, opponent, engine) {
     const { dashTriggered } = this.motionBuffer.record(input, frameCount);
     const isAirborne = (this.y < GameConfig.FLOOR_Y);
@@ -222,7 +364,10 @@ class Fighter {
       this.lastGrabPressFrame = frameCount;
     }
 
-    // 1. Throw Escape (Throw Tech) while grabbed
+    if (isAirborne && this.airActionsLocked) {
+      return;
+    }
+
     if (this.state === 'THROWN' && opponent.state === 'THROW_EXEC') {
       if (input.grabTriggered && opponent.throwTimer <= GameConfig.THROW.TECH_WINDOW_FRAMES) {
         this.triggerThrowTech(opponent, engine);
@@ -231,19 +376,18 @@ class Fighter {
       return;
     }
 
-    // 2. Critical: Knockdown State Handling (2-Bar Ground Reversal OR 3-Button QTE Wake-up)
     if (this.state === 'KNOCKDOWN' || this.state === 'OTG_HIT') {
-      // 2A. Ground Reversal (Costs 2 Super Bars = 200 points) to counter incoming Launchers/OTG attacks!
-      if (input.reversalTriggered && this.superMeter >= GameConfig.REVERSAL.SUPER_COST) {
-        this.superMeter -= GameConfig.REVERSAL.SUPER_COST;
+      const revCost = (GameConfig.REVERSAL && GameConfig.REVERSAL.SUPER_COST) || 200;
+      if (input.reversalTriggered && this.superMeter >= revCost) {
+        this.superMeter -= revCost;
         this.wasHitOnGround = false;
+        this.autoWakeupActive = false;
         this.startMove('REVERSAL');
         engine.triggerReversalEffect(this);
         return;
       }
 
-      // 2B. Knockdown 3-Button QTE Sequence Check (Within 2.0s window)
-      if (this.state === 'KNOCKDOWN' && !this.qteFailed) {
+      if (this.state === 'KNOCKDOWN' && !this.autoWakeupActive && !this.qteFailed) {
         const pressedBtn = input.LP ? 'LP' : input.MP ? 'MP' : input.HP ? 'HP'
                          : input.LK ? 'LK' : input.MK ? 'MK' : input.HK ? 'HK' : null;
         if (pressedBtn) {
@@ -252,12 +396,10 @@ class Fighter {
             this.qteIndex++;
             engine.spawnParticles(this.x, this.y - 40, '#00ff88', 6, 4);
             if (this.qteIndex >= this.qteSequence.length) {
-              // Completed all 3 buttons within 2.0s -> Immediate 0.5s Wake-up!
               this.enterWakeup(engine, "QUICK WAKEUP (0.5s)!");
               return;
             }
           } else {
-            // Wrong button resets progress back to first button in sequence
             this.qteIndex = 0;
             engine.addFloatingText("QTE RESET!", this.x, this.y - 95, '#ff4477', 15);
           }
@@ -270,7 +412,6 @@ class Fighter {
       return;
     }
 
-    // 3. Perfect Block Mode (LT / Key H) - Drains 0.546 per frame, requires >= 100 Super Meter
     const canEnterPerfectBlock = !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || this.state === 'DASH');
     if (input.perfectBlockHold) {
       if (this.state === 'PERFECT_BLOCK') {
@@ -279,9 +420,10 @@ class Fighter {
           this.vx *= 0.5;
           return;
         } else {
+          this.superMeter = 0;
           this.holdingPerfectBlock = false;
           this.state = 'IDLE';
-          engine.addFloatingText("SUPER GAUGE EMPTY!", this.x, this.y - 110, '#ff4477', 16);
+          engine.addFloatingText("SUPER GAUGE DEPLETED!", this.x, this.y - 110, '#ff4477', 16);
         }
       } else if (canEnterPerfectBlock && this.superMeter >= GameConfig.PERFECT_BLOCK.MIN_SUPER_REQ) {
         this.state = 'PERFECT_BLOCK';
@@ -297,100 +439,159 @@ class Fighter {
     }
 
     const isGroundNeutral = !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || this.state === 'DASH');
-    const isAirNeutral = isAirborne && (this.state === 'JUMP' && !this.hasAirAttacked);
+    const isAirNeutral = isAirborne && ((this.state === 'JUMP' || this.state === 'AIR_DASH') && !this.hasAirAttacked);
     const canCancelNow = this.canCancel();
 
-    // 4. Super Arts (Ground only)
+    // Super Arts
     if (!isAirborne && (isGroundNeutral || (this.state === 'ATTACK' && this.hitConnected)) && (input.anyPunch || input.anyKick)) {
-      const superMotion = this.motionBuffer.detectSuperMotion(frameCount);
+      const doubleMotion = this.motionBuffer.detectSuperMotion(frameCount);
       const gCfg = GameConfig.GAUGES;
 
-      if (superMotion === '214214' && input.anyPunch && this.superMeter >= gCfg.SUPER_LV3_COST) {
+      if (doubleMotion === '214214' && input.anyPunch && this.superMeter >= gCfg.SUPER_LV3_COST) {
         this.superMeter -= gCfg.SUPER_LV3_COST;
         this.motionBuffer.clearMotions();
+        this.groundChainList = [];
         this.startMove('SUPER_3');
         engine.triggerSuperFreeze(this, 3, this.currentMove.name);
         return;
       }
-      if (superMotion === '236236' && input.anyKick && this.superMeter >= gCfg.SUPER_LV2_COST) {
+      if (doubleMotion === '236236' && input.anyKick && this.superMeter >= gCfg.SUPER_LV2_COST) {
         this.superMeter -= gCfg.SUPER_LV2_COST;
         this.motionBuffer.clearMotions();
+        this.groundChainList = [];
         this.startMove('SUPER_2');
         engine.triggerSuperFreeze(this, 2, this.currentMove.name);
         return;
       }
-      if (superMotion === '236236' && input.anyPunch && this.superMeter >= gCfg.SUPER_LV1_COST) {
+      if (doubleMotion === '236236' && input.anyPunch && this.superMeter >= gCfg.SUPER_LV1_COST) {
         this.superMeter -= gCfg.SUPER_LV1_COST;
         this.motionBuffer.clearMotions();
+        this.groundChainList = [];
         this.startMove('SUPER_1');
         engine.triggerSuperFreeze(this, 1, this.currentMove.name);
         return;
       }
     }
 
-    // 5. Exclusive Throw Input (LP + LK)
+    // Uppercut Skill: Right, Down, Right + Punch (623P)
+    if (input.anyPunch && this.isUppercutMotion(frameCount)) {
+      if (isAirborne) {
+        if (!this.usedAirUppercut && (isAirNeutral || canCancelNow) && this.data.moves['8_623P']) {
+          this.motionBuffer.clearMotions();
+          this.startMove('8_623P');
+          engine.addFloatingText("AIR UPPERCUT! (AIR LOCKED)", this.x, this.y - 115, '#00ffcc', 20);
+          return;
+        }
+      } else if ((isGroundNeutral || canCancelNow) && this.data.moves['623P']) {
+        this.motionBuffer.clearMotions();
+        this.groundChainList = [];
+        this.startMove('623P');
+        engine.addFloatingText("UPPERCUT! (AIR LOCKED)", this.x, this.y - 115, '#00ffcc', 20);
+        return;
+      }
+    }
+
     if (input.grabTriggered) {
       if (isGroundNeutral) {
+        this.groundChainList = [];
         this.startMove('GRAB');
       }
       return;
     }
 
-    // 6. Double-Tap (66/44) or Button Dash
-    if (dashTriggered && !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH')) {
+    if (dashTriggered) {
       const isForwardDash = (dashTriggered === 6);
-      this.state = 'DASH';
-      this.dashTimer = isForwardDash ? GameConfig.DASH.FORWARD_DURATION_FRAMES : GameConfig.DASH.BACKWARD_DURATION_FRAMES;
-      this.dashDir = isForwardDash ? this.facing : -this.facing;
-      this.vx = this.dashDir * (isForwardDash ? this.dashForwardSpeed : this.dashBackwardSpeed);
-      engine.spawnParticles(this.x, this.y - 15, this.data.color, 10, 5);
-      engine.addFloatingText(isForwardDash ? "DASH" : "BACKDASH", this.x, this.y - 105, this.data.color, 16);
-      return;
+      if (isAirborne) {
+        if ((this.state === 'JUMP' || canCancelNow) && this.airDashCount < this.maxAirDashes) {
+          this.airDashCount++;
+          this.state = 'AIR_DASH';
+          this.dashTimer = 12;
+          this.dashDir = isForwardDash ? this.facing : -this.facing;
+          this.vx = this.dashDir * (isForwardDash ? this.dashForwardSpeed * 1.05 : this.dashBackwardSpeed * 0.95);
+          this.vy = 0;
+          this.currentMove = null;
+          this.currentMoveKey = null;
+          this.hasAirAttacked = false;
+          engine.spawnParticles(this.x, this.y - 45, this.data.color, 14, 6);
+          engine.addFloatingText(isForwardDash ? "AIR DASH!" : "AIR BACKDASH!", this.x, this.y - 110, '#00ffcc', 17);
+          return;
+        }
+      } else if (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH') {
+        this.state = 'DASH';
+        this.dashTimer = isForwardDash ? GameConfig.DASH.FORWARD_DURATION_FRAMES : GameConfig.DASH.BACKWARD_DURATION_FRAMES;
+        this.dashDir = isForwardDash ? this.facing : -this.facing;
+        this.vx = this.dashDir * (isForwardDash ? this.dashForwardSpeed : this.dashBackwardSpeed);
+        engine.spawnParticles(this.x, this.y - 15, this.data.color, 10, 5);
+        engine.addFloatingText(isForwardDash ? "DASH" : "BACKDASH", this.x, this.y - 105, this.data.color, 16);
+        return;
+      }
     }
 
-    // 7. Attacks (Launchers, Grounded OTG Attacks, and Jumping Air Combo Attacks)
     const btn = input.HP ? 'HP' : input.MP ? 'MP' : input.LP ? 'LP'
               : input.HK ? 'HK' : input.MK ? 'MK' : input.LK ? 'LK' : null;
 
     if (btn) {
-      // 7A. Airborne Air Combo Attacks (Can chain any air attack during Air Combo window!)
       if (isAirborne && (isAirNeutral || canCancelNow)) {
+        if (input.down && btn === 'HK' && this.data.moves['82HK']) {
+          this.startMove('82HK');
+          engine.addFloatingText("HEAVY JUMP CRUSH!", this.x, this.y - 110, '#ffaa00', 19);
+          return;
+        }
         if (this.data.moves['8' + btn]) {
           this.startMove('8' + btn);
           return;
         }
       }
 
-      // 7B. Grounded Launchers, OTG Moves, and Normals
       if (!isAirborne && (isGroundNeutral || canCancelNow)) {
         const specialMotion = this.motionBuffer.detectSpecialMotion(frameCount);
-        const pOrK = btn.endsWith('P') ? 'P' : 'K';
-        if (specialMotion && this.data.moves[specialMotion + pOrK]) {
-          this.motionBuffer.clearMotions();
-          this.startMove(specialMotion + pOrK);
-          engine.addFloatingText(this.currentMove.name, this.x, this.y - 115, '#00f0ff', 18);
-          return;
+        if (specialMotion) {
+          const exactMoveKey = specialMotion + btn;
+          const genericMoveKey = specialMotion + (btn.endsWith('P') ? 'P' : 'K');
+          const resolvedKey = this.data.moves[exactMoveKey] ? exactMoveKey : (this.data.moves[genericMoveKey] ? genericMoveKey : null);
+
+          if (resolvedKey) {
+            this.motionBuffer.clearMotions();
+            this.groundChainList = [];
+            this.startMove(resolvedKey);
+            engine.addFloatingText(this.currentMove.name, this.x, this.y - 115, '#00f0ff', 18);
+            return;
+          }
         }
 
-        if (input.down && this.data.moves['2' + btn]) {
-          this.startMove('2' + btn);
-          return;
+        if (canCancelNow && this.canChainGroundNormal(btn)) {
+          const prefix = input.down ? '2' : '5';
+          const moveKey = this.data.moves[prefix + btn] ? (prefix + btn) : ('5' + btn);
+          if (this.data.moves[moveKey]) {
+            this.startMove(moveKey, btn);
+            return;
+          }
         }
-        if (this.data.moves['5' + btn]) {
-          this.startMove('5' + btn);
-          return;
+
+        if (isGroundNeutral) {
+          this.groundChainList = [];
+          this.groundPushCount = 0;
+          const prefix = input.down ? '2' : '5';
+          const moveKey = this.data.moves[prefix + btn] ? (prefix + btn) : ('5' + btn);
+          if (this.data.moves[moveKey]) {
+            this.startMove(moveKey, btn);
+            return;
+          }
         }
       }
     }
 
-    // 8. Walk, Crouch, Jump Initiation (Can jump-cancel after launching opponent!)
-    const canJumpCancelLauncher = (this.state === 'ATTACK' && this.currentMove && this.currentMove.launcher && this.hitConnected);
+    const canJumpCancelLauncher = (this.state === 'ATTACK' && this.currentMove && this.currentMove.launcher && this.hitConnected && !this.airActionsLocked);
     if (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || canJumpCancelLauncher) {
       if (input.up && this.y >= GameConfig.FLOOR_Y) {
         this.vy = -this.jumpForce;
         this.state = 'JUMP';
+        this.airDashCount = 0;
+        this.usedAirUppercut = false;
+        this.airActionsLocked = false;
         this.currentMove = null;
         this.currentMoveKey = null;
+        this.groundChainList = [];
         this.hasAirAttacked = false;
         if (input.forward || canJumpCancelLauncher) this.vx = this.facing * (this.walkForwardSpeed * GameConfig.JUMP_FORWARD_SPEED_MULT);
         else if (input.back) this.vx = -this.facing * (this.walkBackwardSpeed * GameConfig.JUMP_BACKWARD_SPEED_MULT);
@@ -419,17 +620,26 @@ class Fighter {
 
     if (this.bannerTimer > 0) this.bannerTimer -= dt;
 
+    if (this.launchImmune && (this.state === 'IDLE' || this.state === 'WALK')) {
+      this.launchImmuneTimer -= dt;
+      if (this.launchImmuneTimer <= 0) {
+        this.launchImmune = false;
+        this.launchCount = 0;
+      }
+    }
+
     for (let i = this.afterimages.length - 1; i >= 0; i--) {
       this.afterimages[i].alpha -= GameConfig.DASH.AFTERIMAGE_FADE_SPEED * dt;
       if (this.afterimages[i].alpha <= 0) this.afterimages.splice(i, 1);
     }
 
-    // Drain Super Meter by 0.546 per frame while holding Perfect Block (LT)
     if (this.state === 'PERFECT_BLOCK') {
       this.superMeter = Math.max(0, this.superMeter - GameConfig.PERFECT_BLOCK.DRAIN_PER_FRAME * dt);
       if (this.superMeter <= 0) {
+        this.superMeter = 0;
         this.holdingPerfectBlock = false;
         this.state = 'IDLE';
+        engine.addFloatingText("SUPER GAUGE DEPLETED!", this.x, this.y - 110, '#ff4477', 16);
       }
     }
 
@@ -440,7 +650,6 @@ class Fighter {
       }
     }
 
-    // Handle 0.5-Second (30 frames) Wake-up Animation State
     if (this.state === 'WAKEUP') {
       this.stateTimer -= dt;
       this.vx *= 0.8;
@@ -454,10 +663,18 @@ class Fighter {
       return;
     }
 
-    // Handle Knockdown QTE Timer (2.0s window -> +2.0s penalty = 4.0s total)
     if (this.state === 'KNOCKDOWN') {
       this.knockdownElapsed += dt;
       this.vx *= 0.85;
+
+      if (this.autoWakeupActive) {
+        this.autoWakeupFramesLeft -= dt;
+        if (this.autoWakeupFramesLeft <= 0) {
+          this.enterWakeup(engine, "WAKEUP (0.5s)!");
+        }
+        return;
+      }
+
       const qteWinFrames = Math.round(GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS * 60);
       const totalPenaltyFrames = Math.round((GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS + GameConfig.KNOCKDOWN.PENALTY_ADD_SECONDS) * 60);
 
@@ -472,7 +689,6 @@ class Fighter {
       return;
     }
 
-    // Handle Grounded OTG Hit State: Wake up immediately (in 0.5s) as soon as attacker finishes their grounded attack!
     if (this.state === 'OTG_HIT') {
       this.stateTimer -= dt;
       this.vx *= 0.82;
@@ -483,13 +699,16 @@ class Fighter {
       return;
     }
 
-    if (this.state === 'DASH') {
+    if (this.state === 'DASH' || this.state === 'AIR_DASH') {
       this.dashTimer -= dt;
       if (Math.floor(this.dashTimer) % GameConfig.DASH.AFTERIMAGE_INTERVAL_FRAMES === 0) {
         this.afterimages.push({ x: this.x, y: this.y, facing: this.facing, alpha: 0.45 });
       }
+      if (this.state === 'AIR_DASH') {
+        this.vy = 0;
+      }
       if (this.dashTimer <= 0) {
-        this.state = 'IDLE';
+        this.state = (this.y < GameConfig.FLOOR_Y) ? 'JUMP' : 'IDLE';
         this.vx *= GameConfig.DASH.END_VELOCITY_DAMPING;
       }
     }
@@ -503,7 +722,6 @@ class Fighter {
       }
     }
 
-    // Character-Specific Throw Execution
     if (this.state === 'THROW_EXEC' && this.throwTarget) {
       this.throwTimer += dt;
       const t = this.throwTarget;
@@ -548,7 +766,7 @@ class Fighter {
       if (this.throwTimer >= execDur) {
         const throwDmg = GameConfig.THROW.DAMAGE;
         t.hp = Math.max(0, t.hp - throwDmg);
-        t.enterKnockdown();
+        t.enterKnockdown('QTE');
         t.vx = this.facing * 6;
 
         this.comboCount = 1;
@@ -572,28 +790,44 @@ class Fighter {
       this.facing = (opponent.x >= this.x) ? 1 : -1;
     }
 
-    // Attack State Execution
     if (this.state === 'ATTACK' && this.currentMove) {
+      const prevTimer = this.moveTimer;
       this.moveTimer += dt;
       const m = this.currentMove;
 
-      if (m.airMove) {
-        // Maintain airborne control
+      if (m.airMove || m.isUppercut) {
+        // Maintain airborne trajectory
       } else if (m.dashSpeed && this.moveTimer >= m.startup - 2 && this.moveTimer <= m.startup + m.active) {
         this.vx = this.facing * m.dashSpeed;
       } else if (this.y >= GameConfig.FLOOR_Y) {
         this.vx *= 0.78;
       }
 
-      // Active Hitbox Check (Supports hitting standing, airborne, or grounded OTG targets)
-      if (!this.hasDealtHit && this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active) {
+      if (m.projectile && prevTimer < m.startup && this.moveTimer >= m.startup) {
+        engine.spawnProjectile(this, m);
+        this.hitConnected = true;
+      }
+
+      if (m.isFloorSlam && prevTimer < m.startup && this.moveTimer >= m.startup) {
+        engine.triggerFloorSlamEffect(this.x + this.facing * 52, GameConfig.FLOOR_Y, this.data.color);
+      }
+
+      if (!m.projectile && !this.hasDealtHit && this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active) {
         const dist = Math.abs(opponent.x - this.x);
         const vDist = Math.abs(opponent.y - this.y);
         const inFront = (opponent.x - this.x) * this.facing >= -20;
 
         const targetIsDown = (opponent.state === 'KNOCKDOWN' || opponent.state === 'OTG_HIT');
-        const canHitTargetState = opponent.state !== 'WAKEUP' && opponent.state !== 'THROWN' && opponent.state !== 'THROW_TECH' &&
-                                  (!targetIsDown || m.hitsGrounded);
+        const isAllowedGroundedHit = !m.airMove && !m.isJumpCrush && (
+          m.isFloorSlam ||
+          this.currentMoveKey === '2HP' ||
+          this.currentMoveKey === '2HK' ||
+          this.currentMoveKey === '5HK'
+        );
+        const canHitTargetState = opponent.state !== 'WAKEUP' &&
+                                  opponent.state !== 'THROWN' &&
+                                  opponent.state !== 'THROW_TECH' &&
+                                  (!targetIsDown || isAllowedGroundedHit);
 
         if (inFront && dist <= m.reach && vDist <= 125 && canHitTargetState) {
           if (!opponent.currentMove || !opponent.currentMove.invuln) {
@@ -606,8 +840,8 @@ class Fighter {
         this.state = (this.y < GameConfig.FLOOR_Y) ? 'JUMP' : 'IDLE';
         this.currentMove = null;
         this.currentMoveKey = null;
+        this.groundChainList = [];
 
-        // If opponent was in OTG_HIT waiting for this grounded attack to end, trigger their 0.5s wake-up now!
         if (opponent.state === 'OTG_HIT') {
           opponent.enterWakeup(engine, "OTG RECOVERY (0.5s)!");
         }
@@ -616,17 +850,17 @@ class Fighter {
 
     if (this.state === 'HIT' || this.state === 'BLOCK') {
       this.stateTimer -= dt;
-      this.vx *= 0.86;
+      this.vx *= 0.84;
       if (this.stateTimer <= 0) {
         this.state = 'IDLE';
         this.juggleCount = 0;
         this.wallSplatted = false;
         opponent.comboCount = 0;
         opponent.comboDamage = 0;
+        opponent.groundPushCount = 0;
       }
     }
 
-    // Air Combo Window Countdown
     if (this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) {
       this.airComboFramesLeft = Math.max(0, this.airComboFramesLeft - dt);
     }
@@ -634,31 +868,44 @@ class Fighter {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    // Apply reduced gravity during active Air Combo window so air combos feel smooth and responsive
+    const AIR_CEILING_Y = 210;
+    if (this.y < AIR_CEILING_Y) {
+      this.y = AIR_CEILING_Y;
+      if (this.vy < 0) this.vy = 0;
+    }
+
     if (this.y < GameConfig.FLOOR_Y) {
-      const inAirCombo = (this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) ||
-                         (opponent.state === 'AIR_HIT' && opponent.airComboFramesLeft > 0);
-      const grav = inAirCombo ? GameConfig.AIR_COMBO_GRAVITY : GameConfig.GRAVITY;
-      this.vy += grav * dt;
+      if (this.state !== 'AIR_DASH') {
+        const inAirCombo = !this.airActionsLocked &&
+                           ((this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) ||
+                            (opponent.state === 'AIR_HIT' && opponent.airComboFramesLeft > 0));
+        const grav = inAirCombo ? GameConfig.AIR_COMBO_GRAVITY : GameConfig.GRAVITY;
+        this.vy += grav * dt;
+      }
     } else {
       this.y = GameConfig.FLOOR_Y;
       this.vy = 0;
+      this.airDashCount = 0;
+      this.usedAirUppercut = false;
+      this.airActionsLocked = false;
       this.hasAirAttacked = false;
 
       if (this.state === 'AIR_HIT') {
-        this.enterKnockdown();
+        this.enterKnockdown('QTE');
         engine.triggerHitstop(0, 6);
         engine.spawnParticles(this.x, GameConfig.FLOOR_Y, '#ffffff', 12, 5);
-      } else if (this.state === 'JUMP') {
+      } else if (this.state === 'JUMP' || this.state === 'AIR_DASH') {
         this.state = 'IDLE';
-      } else if (this.state === 'ATTACK' && this.currentMove && this.currentMove.airMove) {
+      } else if (this.state === 'ATTACK' && this.currentMove && (this.currentMove.airMove || this.currentMove.isUppercut)) {
         this.state = 'IDLE';
         this.currentMove = null;
         this.currentMoveKey = null;
+        if (opponent.state === 'OTG_HIT') {
+          opponent.enterWakeup(engine, "OTG RECOVERY (0.5s)!");
+        }
       }
     }
 
-    // Stage Wall Boundaries
     if (this.x <= GameConfig.STAGE_LEFT || this.x >= GameConfig.STAGE_RIGHT) {
       this.x = Math.max(GameConfig.STAGE_LEFT, Math.min(GameConfig.STAGE_RIGHT, this.x));
       this.vx = 0;
@@ -676,11 +923,32 @@ class Fighter {
     this.hasDealtHit = true;
     this.hitConnected = true;
 
-    // 1. Perfect Block (LT / Key H) - Blocks 100% of attacks, reduces HP by only 0.15% of Max HP
+    const wasTargetDown = (opponent.state === 'KNOCKDOWN' || opponent.state === 'OTG_HIT');
+    const wasTargetAirborne = (opponent.y < GameConfig.FLOOR_Y || opponent.state === 'AIR_HIT');
+
+    if (wasTargetDown) {
+      const isAllowedGroundedHit = !move.airMove && !move.isJumpCrush && (
+        move.isFloorSlam ||
+        this.currentMoveKey === '2HP' ||
+        this.currentMoveKey === '2HK' ||
+        this.currentMoveKey === '5HK'
+      );
+      if (!isAllowedGroundedHit) {
+        return;
+      }
+    }
+
+    const applyGroundPushback = (basePush, isBlock = false) => {
+      this.groundPushCount++;
+      const progressivePush = basePush + this.groundPushCount * 1.35;
+      opponent.vx = this.facing * progressivePush;
+      this.vx = -this.facing * (progressivePush * (isBlock ? 0.55 : 0.42));
+    };
+
     const isOpponentPerfectBlocking = (opponent.state === 'PERFECT_BLOCK' || opponent.holdingPerfectBlock);
     if (isOpponentPerfectBlocking && !move.isThrow) {
       opponent.state = 'PERFECT_BLOCK';
-      opponent.vx = this.facing * ((move.push || 6) * GameConfig.PERFECT_BLOCK.PUSHBACK_MULT);
+      applyGroundPushback((move.push || 4) * GameConfig.PERFECT_BLOCK.PUSHBACK_MULT, true);
       const chipDmg = opponent.maxHp * (GameConfig.PERFECT_BLOCK.CHIP_DAMAGE_MAX_HP_PERCENT / 100);
       opponent.hp = Math.max(1, Number((opponent.hp - chipDmg).toFixed(2)));
 
@@ -690,7 +958,6 @@ class Fighter {
       return;
     }
 
-    // 2. Throw & Throw Tech Check
     if (move.isThrow) {
       if (opponent.y < GameConfig.FLOOR_Y - 10) return;
 
@@ -713,7 +980,6 @@ class Fighter {
       return;
     }
 
-    // 3. Normal Directional Guard (Reduces HP by 0.15% of Max HP)
     let normalBlocked = false;
     const canGuard = (opponent.state === 'IDLE' || opponent.state === 'WALK' || opponent.state === 'CROUCH' || opponent.state === 'BLOCK');
     if (canGuard && opponent.holdingBack && !move.unblockable && opponent.y >= GameConfig.FLOOR_Y) {
@@ -725,7 +991,7 @@ class Fighter {
     if (normalBlocked) {
       opponent.state = 'BLOCK';
       opponent.stateTimer = move.blockstun;
-      opponent.vx = this.facing * ((move.push || 5) * GameConfig.BLOCK.PUSHBACK_MULT);
+      applyGroundPushback((move.push || 4) * GameConfig.BLOCK.PUSHBACK_MULT, true);
 
       const chipDmg = opponent.maxHp * (GameConfig.BLOCK.CHIP_DAMAGE_MAX_HP_PERCENT / 100);
       opponent.hp = Math.max(1, Number((opponent.hp - chipDmg).toFixed(2)));
@@ -737,12 +1003,7 @@ class Fighter {
       return;
     }
 
-    // 4. Clean Hit & Character-Specific Air Combo Damage Scaling
     this.comboCount++;
-    const wasTargetDown = (opponent.state === 'KNOCKDOWN' || opponent.state === 'OTG_HIT');
-    const wasTargetAirborne = (opponent.y < GameConfig.FLOOR_Y || opponent.state === 'AIR_HIT');
-
-    // Apply character-specific airDamageMultiplier when hitting an airborne opponent
     let dmgMult = 1.0;
     if (wasTargetAirborne || move.airMove) {
       dmgMult = this.airDamageMultiplier;
@@ -754,65 +1015,113 @@ class Fighter {
     this.superMeter = Math.min(GameConfig.GAUGES.MAX_SUPER, this.superMeter + GameConfig.GAUGES.SUPER_GAIN_ON_HIT);
     opponent.superMeter = Math.min(GameConfig.GAUGES.MAX_SUPER, opponent.superMeter + GameConfig.GAUGES.SUPER_GAIN_ON_HURT);
 
-    engine.triggerHitstop(move.launcher || move.superLevel ? 10 : 6, move.launcher ? 9 : 4);
-    engine.spawnParticles((this.x + opponent.x) / 2, opponent.y - 45, this.data.color, 20, 8);
+    engine.triggerHitstop(move.launcher || move.isUppercut || move.superLevel ? 9 : 5, move.launcher || move.isUppercut ? 8 : 3);
+    engine.spawnParticles((this.x + opponent.x) / 2, opponent.y - 45, this.data.color, 18, 7);
 
-    // 4A. Grounded OTG Strike (Target is lying on ground and hit by non-launcher OTG move)
-    if (wasTargetDown && !move.launcher) {
-      opponent.state = 'OTG_HIT';
-      opponent.wasHitOnGround = true;
-      opponent.stateTimer = 24;
+    if (move.isJumpCrush && !wasTargetAirborne && !wasTargetDown) {
+      const kdSec = move.fixedKnockdownSec || 1.0;
+      opponent.enterKnockdown('FIXED', kdSec);
       opponent.vx = this.facing * 3.5;
-      engine.addFloatingText(`OTG HIT! (-${finalDmg})`, opponent.x, opponent.y - 90, '#ffaa00', 20);
+      engine.addFloatingText(`JUMP CRUSH! (${kdSec.toFixed(1)}s KNOCKDOWN)`, opponent.x, opponent.y - 110, '#ffaa00', 20);
       return;
     }
 
-    // 4B. Launcher Hit (Starts the Character's Air Combo Timer up to 6.0s!)
-    if (move.launcher) {
+    if (move.isHeavySweep && !wasTargetAirborne && !wasTargetDown) {
+      opponent.enterKnockdown('SWEEP_QTE');
+      applyGroundPushback(move.push || 5, false);
+      engine.addFloatingText("SWEEP KNOCKDOWN! (INPUT QTE)", opponent.x, opponent.y - 110, '#ff4477', 20);
+      return;
+    }
+
+    if (move.isUppercut) {
+      opponent.state = 'AIR_HIT';
+      opponent.airComboFramesLeft = 0;
+      opponent.vy = -8.5;
+      opponent.vx = this.facing * 5.5;
+      opponent.y = Math.min(opponent.y, GameConfig.FLOOR_Y - 14);
+      engine.addFloatingText("UPPERCUT FINISH!!", opponent.x, opponent.y - 115, '#00ffcc', 22);
+      return;
+    }
+
+    const canLaunchTarget = move.launcher && !opponent.launchImmune && opponent.launchCount < 2;
+    if (move.launcher && !canLaunchTarget && !wasTargetAirborne) {
+      engine.addFloatingText("LAUNCH IMMUNE! (NORMAL HIT)", opponent.x, opponent.y - 115, '#ffaa00', 18);
+      if (wasTargetDown) {
+        opponent.state = 'OTG_HIT';
+        opponent.wasHitOnGround = true;
+        opponent.stateTimer = 20;
+        applyGroundPushback(3.5, false);
+        return;
+      } else {
+        opponent.state = 'HIT';
+        opponent.stateTimer = move.hitstun || 26;
+        applyGroundPushback(move.push || 4, false);
+        return;
+      }
+    }
+
+    if (wasTargetDown && !canLaunchTarget) {
+      opponent.state = 'OTG_HIT';
+      opponent.wasHitOnGround = true;
+      opponent.stateTimer = 24;
+      applyGroundPushback(3.5, false);
+      engine.addFloatingText(`HARD KICK OTG! (-${finalDmg})`, opponent.x, opponent.y - 90, '#ffaa00', 20);
+      return;
+    }
+
+    if (canLaunchTarget && !wasTargetAirborne) {
+      opponent.launchCount++;
       opponent.state = 'AIR_HIT';
       opponent.juggleCount = 1;
       opponent.airComboMaxFrames = this.maxAirComboFrames;
       opponent.airComboFramesLeft = this.maxAirComboFrames;
-      opponent.vy = -7.8;
-      opponent.vx = this.facing * (move.vx || 2.5);
-      opponent.y = Math.min(opponent.y, GameConfig.FLOOR_Y - 12);
-      const maxSecText = (this.maxAirComboFrames / 60).toFixed(1);
-      engine.addFloatingText(`LAUNCH! (${maxSecText}s AIR COMBO)`, opponent.x, opponent.y - 110, '#00ffcc', 21);
+
+      opponent.vy = -7.2;
+      opponent.vx = this.facing * 1.2;
+      opponent.y = Math.min(opponent.y, GameConfig.FLOOR_Y - 14);
+
+      const bounceTag = this.data.isSpongeBob ? "FRYING PAN SLAM!" : (move.groundBounce ? "FLOOR SLAM BOUNCE!" : "LAUNCH!");
+      const launchLabel = opponent.launchCount === 1
+        ? `${bounceTag} 1/2 (${(this.maxAirComboFrames / 60).toFixed(1)}s AIR)`
+        : `${bounceTag} 2/2 (FAST WAKEUP NEXT)`;
+      engine.addFloatingText(launchLabel, opponent.x, opponent.y - 110, '#00ffcc', 20);
       return;
     }
 
-    // 4C. Mid-Air Combo Follow-up Hit
     if (wasTargetAirborne) {
       opponent.juggleCount++;
       if (opponent.airComboFramesLeft > 0) {
-        // Keep both attacker and victim suspended while Air Combo timer remains!
         opponent.state = 'AIR_HIT';
-        opponent.vy = GameConfig.AIR_COMBO.VICTIM_AIR_FLOAT_VY;
-        opponent.vx = this.facing * GameConfig.AIR_COMBO.VICTIM_AIR_PUSH_VX;
-        if (this.y < GameConfig.FLOOR_Y) {
-          this.vy = GameConfig.AIR_COMBO.ATTACKER_AIR_BOUNCE_VY;
-          this.hasAirAttacked = false; // Allow chaining next air attack before landing!
+
+        const targetHoverY = 235;
+        const heightDiff = opponent.y - targetHoverY;
+        const controlledLift = heightDiff > 0 ? -4.2 : -2.4;
+
+        opponent.vy = controlledLift;
+        opponent.vx = this.facing * 0.5;
+
+        if (this.y < GameConfig.FLOOR_Y && !move.isJumpCrush) {
+          this.vy = controlledLift;
+          this.vx = this.facing * 0.5;
+          this.hasAirAttacked = false;
         }
       } else {
-        // Air Combo timer expired -> Knock opponent down to floor
-        opponent.vy = 6.0;
-        opponent.vx = this.facing * 6.0;
+        opponent.vy = 6.5;
+        opponent.vx = this.facing * 4.5;
         engine.addFloatingText("AIR TIME LIMIT!", opponent.x, opponent.y - 105, '#ff4477', 20);
       }
       return;
     }
 
-    // 4D. Knockdown Move (e.g., 2HK Sweep or Ground Reversal)
     if (move.knockdown) {
-      opponent.enterKnockdown();
-      opponent.vx = this.facing * (move.vx || 5);
+      opponent.enterKnockdown('QTE');
+      applyGroundPushback(move.push || 5, false);
       return;
     }
 
-    // 4E. Standard Ground Hit
     opponent.state = 'HIT';
     opponent.stateTimer = move.hitstun;
-    opponent.vx = this.facing * move.push;
+    applyGroundPushback(move.push || 3.2, false);
   }
 
   drawTwoSegmentLimb(ctx, rootX, rootY, upperLen, lowerLen, upperAngle, lowerAngle, w, fill, stroke, endBoxW, endBoxH) {
@@ -842,6 +1151,312 @@ class Fighter {
     ctx.restore();
   }
 
+  // Critical: Custom SpongeBob Limb & Frying Pan Weapon Renderer
+  drawSpongeBobLeg(ctx, rootX, rootY, upperLen, lowerLen, upperAngle, lowerAngle) {
+    ctx.save();
+    ctx.translate(rootX, rootY);
+    ctx.rotate(upperAngle);
+
+    // Brown Pant Cuff at top of thigh
+    ctx.fillStyle = '#5c330a';
+    ctx.strokeStyle = '#1e1205';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-8, -2, 16, 8, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // Yellow Sponge Upper Leg
+    ctx.fillStyle = '#fff200';
+    ctx.strokeStyle = '#8f8400';
+    ctx.fillRect(-4, 6, 8, upperLen - 4);
+    ctx.strokeRect(-4, 6, 8, upperLen - 4);
+
+    // Knee Pivot
+    ctx.translate(0, upperLen);
+    ctx.rotate(lowerAngle);
+
+    // Yellow Lower Shin + White Striped Sock
+    ctx.fillStyle = '#fff200';
+    ctx.fillRect(-4, 0, 8, lowerLen * 0.35);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#333333';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-4.5, lowerLen * 0.35, 9, lowerLen * 0.65);
+    ctx.strokeRect(-4.5, lowerLen * 0.35, 9, lowerLen * 0.65);
+
+    // Blue & Red Sock Stripes
+    ctx.fillStyle = '#0088ff';
+    ctx.fillRect(-4, lowerLen * 0.45, 8, 2.5);
+    ctx.fillStyle = '#ff2222';
+    ctx.fillRect(-4, lowerLen * 0.65, 8, 2.5);
+
+    // Glossy Black SpongeBob Shoe
+    ctx.fillStyle = '#111111';
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-7, lowerLen - 3, 20, 11, 5);
+    ctx.fill();
+    ctx.stroke();
+    // White Shoe Shine Dot
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(7, lowerLen + 1, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  drawSpongeBobArm(ctx, rootX, rootY, upperLen, lowerLen, upperAngle, lowerAngle, withFryingPan = false, isSlamActive = false) {
+    ctx.save();
+    ctx.translate(rootX, rootY);
+    ctx.rotate(upperAngle);
+
+    // White Shirt Sleeve Puff
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-7, -3, 14, 11, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    // Yellow Upper Arm
+    ctx.fillStyle = '#fff200';
+    ctx.strokeStyle = '#8f8400';
+    ctx.fillRect(-3.5, 8, 7, upperLen - 6);
+    ctx.strokeRect(-3.5, 8, 7, upperLen - 6);
+
+    // Elbow Pivot & Forearm
+    ctx.translate(0, upperLen);
+    ctx.rotate(lowerAngle);
+
+    ctx.fillStyle = '#fff200';
+    ctx.fillRect(-3.5, 0, 7, lowerLen);
+    ctx.strokeRect(-3.5, 0, 7, lowerLen);
+
+    // Yellow Hand
+    ctx.beginPath();
+    ctx.arc(0, lowerLen + 3, 6.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Critical: Draw Cast-Iron Frying Pan when SpongeBob uses Floor Slam (2HP) or Pan Moves!
+    if (withFryingPan) {
+      ctx.save();
+      ctx.translate(0, lowerLen + 4);
+      // Orient pan so it slams flat onto the floor during active slam frames
+      ctx.rotate(isSlamActive ? Math.PI * 0.35 : 0.15);
+
+      // Pan Handle
+      ctx.fillStyle = '#1b1f26';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-3, 0, 6, 26);
+      ctx.strokeRect(-3, 0, 6, 26);
+
+      // Heavy Cast-Iron Frying Pan Head
+      ctx.fillStyle = '#232933';
+      ctx.strokeStyle = '#d1d9e6';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.roundRect(-22, 24, 44, 15, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Sizzling Golden Krabby Patty / Hot Oil Glow inside Pan
+      ctx.fillStyle = isSlamActive ? '#ff5500' : '#d97724';
+      ctx.beginPath();
+      ctx.roundRect(-14, 20, 28, 6, 3);
+      ctx.fill();
+
+      if (isSlamActive) {
+        ctx.strokeStyle = '#ffdf33';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 34, 28, 0, Math.PI);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  // Draws SpongeBob's Iconic Yellow Wavy Body, Eyes, Nose, Buck Teeth, White Shirt, Red Tie & Brown SquarePants
+  drawSpongeBobBody(ctx, p, pose) {
+    const isHit = (this.state === 'HIT' || this.state === 'AIR_HIT' || this.state === 'OTG_HIT');
+    const isUsingPan = !!(this.state === 'ATTACK' && this.currentMove && (this.currentMove.isFloorSlam || this.currentMove.usesPan || this.currentMoveKey === '2HP'));
+    const isSlamActive = !!(this.state === 'ATTACK' && this.currentMove && this.moveTimer >= this.currentMove.startup);
+
+    // 1. Back Leg & Front Leg
+    this.drawSpongeBobLeg(ctx, -11, pose.hipY, p.upperLegL, p.lowerLegL, pose.bHip, pose.bKnee);
+    this.drawSpongeBobLeg(ctx, 11, pose.hipY, p.upperLegL, p.lowerLegL, pose.fHip, pose.fKnee);
+
+    ctx.save();
+    ctx.translate(0, pose.hipY);
+    ctx.rotate(pose.torsoTilt);
+
+    // 2. Back Arm
+    this.drawSpongeBobArm(ctx, -22, -32, p.upperArmL, p.lowerArmL, pose.bShoulder, pose.bElbow, isUsingPan, isSlamActive);
+
+    const w = 52;
+    const spongeH = 52;
+    const shirtH = 10;
+    const pantsH = 13;
+
+    // 3. Brown SquarePants Base + Black Belt Dashes
+    ctx.fillStyle = '#6b3e11';
+    ctx.strokeStyle = '#1a0f04';
+    ctx.lineWidth = 2.5;
+    ctx.fillRect(-w / 2, -pantsH + 2, w, pantsH);
+    ctx.strokeRect(-w / 2, -pantsH + 2, w, pantsH);
+
+    ctx.fillStyle = '#111111';
+    ctx.fillRect(-w / 2 + 4, -pantsH + 4, 9, 3.5);
+    ctx.fillRect(-5, -pantsH + 4, 10, 3.5);
+    ctx.fillRect(w / 2 - 13, -pantsH + 4, 9, 3.5);
+
+    // 4. White Shirt Strip & Collar
+    const shirtTopY = -pantsH - shirtH + 2;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 2;
+    ctx.fillRect(-w / 2, shirtTopY, w, shirtH);
+    ctx.strokeRect(-w / 2, shirtTopY, w, shirtH);
+
+    // Shirt Collar Triangles
+    ctx.beginPath();
+    ctx.moveTo(-14, shirtTopY);
+    ctx.lineTo(-5, shirtTopY + 7);
+    ctx.lineTo(0, shirtTopY);
+    ctx.moveTo(0, shirtTopY);
+    ctx.lineTo(5, shirtTopY + 7);
+    ctx.lineTo(14, shirtTopY);
+    ctx.stroke();
+
+    // 5. Yellow Wavy Sponge Upper Body
+    const spongeTopY = shirtTopY - spongeH;
+    ctx.fillStyle = isHit ? '#ff6677' : '#fff200';
+    ctx.strokeStyle = '#998a00';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(-w / 2 - 2, spongeTopY, w + 4, spongeH + 2, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    // Olive-Green Sponge Pores
+    ctx.fillStyle = '#a39c1d';
+    const pores = [
+      [-19, spongeTopY + 10, 4.5],
+      [-20, spongeTopY + 28, 3.5],
+      [-17, spongeTopY + 42, 3.0],
+      [19, spongeTopY + 11, 4.0],
+      [18, spongeTopY + 38, 4.2]
+    ];
+    for (const [px, py, pr] of pores) {
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Red Necktie hanging over Shirt & Pants
+    ctx.fillStyle = '#e61919';
+    ctx.strokeStyle = '#4a0404';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-4, shirtTopY + 1);
+    ctx.lineTo(4, shirtTopY + 1);
+    ctx.lineTo(6, shirtTopY + 12);
+    ctx.lineTo(0, shirtTopY + 18);
+    ctx.lineTo(-6, shirtTopY + 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 6. Expressive Eyes (Two large touching white circles with blue irises & 3 eyelashes)
+    const eyeY = spongeTopY + 19;
+    const drawEye = (ex) => {
+      // Eyelashes
+      ctx.strokeStyle = '#111111';
+      ctx.lineWidth = 2.5;
+      for (const ang of [-0.35, 0, 0.35]) {
+        ctx.beginPath();
+        ctx.moveTo(ex + Math.sin(ang) * 8, eyeY - 9);
+        ctx.lineTo(ex + Math.sin(ang) * 12, eyeY - 14);
+        ctx.stroke();
+      }
+      // White Sclera
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#222222';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(ex, eyeY, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Blue Iris & Black Pupil
+      ctx.fillStyle = '#1ca3ec';
+      ctx.beginPath();
+      ctx.arc(ex + 2, eyeY, 4.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000000';
+      ctx.beginPath();
+      ctx.arc(ex + 2.5, eyeY, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    drawEye(-5);
+    drawEye(11);
+
+    // 7. Rosy Cheek & Long Yellow Nose
+    ctx.strokeStyle = '#e63946';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(-11, eyeY + 8, 4.5, Math.PI * 0.9, Math.PI * 2.1);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff200';
+    ctx.strokeStyle = '#665c00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(16, eyeY + 6, 11, 4.2, -0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 8. Wide Laughing Mouth & Two White Buck Teeth
+    const mouthY = spongeTopY + 31;
+    ctx.fillStyle = '#7a0916';
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-11, mouthY);
+    ctx.quadraticCurveTo(3, mouthY + 4, 15, mouthY + 1);
+    ctx.quadraticCurveTo(12, mouthY + 17, 0, mouthY + 17);
+    ctx.quadraticCurveTo(-12, mouthY + 16, -11, mouthY);
+    ctx.fill();
+    ctx.stroke();
+
+    // Pink Tongue
+    ctx.fillStyle = '#ff758f';
+    ctx.beginPath();
+    ctx.arc(0, mouthY + 13, 6, Math.PI, 0);
+    ctx.fill();
+
+    // Two White Buck Teeth
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-5, mouthY + 1, 5.5, 7);
+    ctx.strokeRect(-5, mouthY + 1, 5.5, 7);
+    ctx.fillRect(2, mouthY + 1, 5.5, 7);
+    ctx.strokeRect(2, mouthY + 1, 5.5, 7);
+
+    // 9. Front Arm (Holds Frying Pan during Floor Slam / Pan Attacks)
+    this.drawSpongeBobArm(ctx, 22, -32, p.upperArmL, p.lowerArmL, pose.fShoulder, pose.fElbow, isUsingPan, isSlamActive);
+
+    ctx.restore();
+  }
+
   computePose() {
     const breath = Math.sin(this.animTick * 0.1) * 0.06;
     const pose = {
@@ -863,16 +1478,16 @@ class Fighter {
       pose.bKnee = cycle < 0 ? 0.45 : 0.15;
       pose.fShoulder = -0.35 - cycle * 0.35;
       pose.bShoulder = 0.2 + cycle * 0.35;
-    } else if (this.state === 'DASH') {
+    } else if (this.state === 'DASH' || this.state === 'AIR_DASH') {
       const forwardDash = (this.dashDir === this.facing);
-      pose.torsoTilt = forwardDash ? 0.38 : -0.32;
-      pose.hipY = -44;
-      pose.fHip = forwardDash ? -0.75 : 0.55;
-      pose.fKnee = 0.65;
+      pose.torsoTilt = forwardDash ? 0.42 : -0.35;
+      pose.hipY = this.state === 'AIR_DASH' ? -52 : -44;
+      pose.fHip = forwardDash ? -0.8 : 0.55;
+      pose.fKnee = 0.7;
       pose.bHip = forwardDash ? 0.85 : -0.65;
-      pose.bKnee = 0.5;
-      pose.fShoulder = 0.4;
-      pose.bShoulder = 0.6;
+      pose.bKnee = 0.55;
+      pose.fShoulder = 0.45;
+      pose.bShoulder = 0.65;
     } else if (this.state === 'THROW_TECH') {
       const ratio = this.stateTimer / GameConfig.THROW.TECH_STATE_FRAMES;
       if (ratio > 0.6) {
@@ -921,7 +1536,6 @@ class Fighter {
       pose.bShoulder = -0.8; pose.bElbow = -0.2;
       pose.fHip = -0.4; pose.bHip = 0.3;
     } else if (this.state === 'KNOCKDOWN' || this.state === 'OTG_HIT') {
-      // Lying on the ground (flinches upward slightly when hit by OTG attack)
       const otgBounce = (this.state === 'OTG_HIT') ? Math.sin(this.animTick * 0.8) * 6 : 0;
       pose.hipY = -12 - Math.abs(otgBounce);
       pose.torsoTilt = -Math.PI / 2 + (this.state === 'OTG_HIT' ? 0.18 : 0);
@@ -930,8 +1544,6 @@ class Fighter {
       pose.fHip = 0.1;       pose.fKnee = 0.25;
       pose.bHip = -0.15;     pose.bKnee = 0.35;
     } else if (this.state === 'WAKEUP') {
-      // Critical: Dedicated 0.5-Second (30 frames) Wake-up Animation
-      // Phase 1: Hands push torso off floor -> Phase 2: Knee tuck push -> Phase 3: Stand up
       const totalWake = Math.round(GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS * 60);
       const progress = Math.max(0, Math.min(1, 1 - (this.stateTimer / totalWake)));
 
@@ -951,42 +1563,100 @@ class Fighter {
       const isActive = this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active;
       const phase = isStartup ? (this.moveTimer / m.startup) * 0.35 : (isActive ? 1.0 : 0.45);
 
-      if (m.anim === 'JAB') {
+      if (m.anim === 'LEAD_JAB' || m.anim === 'JAB') {
         pose.torsoTilt = 0.12 * phase;
-        pose.fShoulder = -Math.PI / 2 * phase - 0.3 * (1 - phase);
-        pose.fElbow = -0.1 * phase - 1.1 * (1 - phase);
-      } else if (m.anim === 'STRAIGHT' || m.anim === 'HOOK') {
-        pose.torsoTilt = 0.25 * phase;
+        if (this.altLimb) {
+          pose.bShoulder = -Math.PI / 2 * phase;
+          pose.bElbow = -0.05 * phase;
+        } else {
+          pose.fShoulder = -Math.PI / 2 * phase - 0.3 * (1 - phase);
+          pose.fElbow = -0.08 * phase - 1.1 * (1 - phase);
+        }
+      } else if (m.anim === 'STEP_STRAIGHT' || m.anim === 'STRAIGHT') {
+        pose.torsoTilt = 0.24 * phase;
         pose.bShoulder = -Math.PI / 2 * phase + 0.2 * (1 - phase);
         pose.bElbow = -0.05 * phase - 1.0 * (1 - phase);
-        pose.fShoulder = 0.35 * phase;
-      } else if (m.anim === 'UPPERCUT') {
-        pose.hipY = -48 - 8 * phase;
-        pose.torsoTilt = -0.22 * phase;
-        pose.bShoulder = -Math.PI * 0.85 * phase;
+        pose.fShoulder = 0.4 * phase;
+        pose.fHip = -0.35 * phase;
+      } else if (m.anim === 'OVERHAND_HOOK' || m.anim === 'HOOK') {
+        pose.torsoTilt = isStartup ? -0.2 : 0.34 * phase;
+        pose.bShoulder = isStartup ? -2.1 : (-Math.PI * 0.45) * phase;
         pose.bElbow = -0.15 * phase;
-      } else if (m.anim === 'LOW_KICK') {
+        pose.fShoulder = 0.5 * phase;
+      } else if (m.anim === 'CALF_KICK' || m.anim === 'LOW_KICK') {
         pose.torsoTilt = -0.15 * phase;
         pose.fHip = -Math.PI * 0.38 * phase;
         pose.fKnee = 0.05 * phase;
-      } else if (m.anim === 'MID_KICK') {
-        pose.torsoTilt = -0.25 * phase;
+      } else if (m.anim === 'SIDE_THRUST_KICK' || m.anim === 'MID_KICK') {
+        pose.torsoTilt = -0.28 * phase;
         pose.fHip = -Math.PI * 0.52 * phase;
-        pose.fKnee = 0.05 * phase;
-      } else if (m.anim === 'HIGH_KICK' || m.anim === 'SPIN_KICK') {
-        pose.torsoTilt = -0.38 * phase;
-        pose.bHip = -Math.PI * 0.68 * phase;
-        pose.bKnee = 0.05 * phase;
-      } else if (m.anim === 'AXE_KICK') {
-        pose.torsoTilt = 0.25 * phase;
-        pose.fHip = isStartup ? -Math.PI * 0.78 : -Math.PI * 0.22;
-        pose.fKnee = 0.08;
-      } else if (m.anim === 'SWEEP') {
-        pose.hipY = -24;
-        pose.torsoTilt = -0.25;
+        pose.fKnee = 0.04 * phase;
+      } else if (m.anim === 'HIGH_HOOK_KICK' || m.anim === 'HIGH_KICK') {
+        pose.torsoTilt = -0.40 * phase;
+        pose.bHip = -Math.PI * 0.70 * phase;
+        pose.bKnee = 0.04 * phase;
+      } else if (m.anim === 'CROUCH_JAB') {
+        pose.hipY = -30;
+        pose.fHip = -0.95; pose.fKnee = 1.45;
+        pose.bHip = -0.75; pose.bKnee = 1.35;
+        pose.fShoulder = -Math.PI / 2 * phase;
+        pose.fElbow = -0.08 * phase;
+      } else if (m.anim === 'CROUCH_GUT_PUNCH') {
+        pose.hipY = -30;
+        pose.torsoTilt = 0.22 * phase;
+        pose.fHip = -0.95; pose.fKnee = 1.45;
+        pose.bHip = -0.75; pose.bKnee = 1.35;
+        pose.bShoulder = -Math.PI * 0.46 * phase;
+        pose.bElbow = -0.05 * phase;
+      } else if (m.anim === 'CROUCH_ANKLE_KICK' || m.anim === 'LOW_SPIN_KICK') {
+        pose.hipY = -26;
+        pose.torsoTilt = -0.2;
         pose.bHip = -0.9; pose.bKnee = 1.4;
-        pose.fHip = -Math.PI * 0.44 * phase;
-        pose.fKnee = 0.02;
+        pose.fHip = -Math.PI * 0.42 * phase;
+        pose.fKnee = 0.05;
+      } else if (m.anim === 'FLOOR_SLAM') {
+        if (isStartup) {
+          pose.hipY = -50;
+          pose.torsoTilt = -0.28;
+          pose.fShoulder = -2.6; pose.fElbow = -0.35;
+          pose.bShoulder = -2.5; pose.bElbow = -0.35;
+        } else {
+          pose.hipY = -24;
+          pose.torsoTilt = 0.65;
+          pose.fHip = -1.05; pose.fKnee = 1.5;
+          pose.bHip = -0.65; pose.bKnee = 1.3;
+          pose.fShoulder = -0.32; pose.fElbow = 0.05;
+          pose.bShoulder = -0.28; pose.bElbow = 0.05;
+        }
+      } else if (m.anim === 'DRAGON_SWEEP' || m.anim === 'SWEEP') {
+        pose.hipY = -20;
+        pose.torsoTilt = -0.38;
+        pose.fHip = -1.1; pose.fKnee = 1.55;
+        pose.bHip = -Math.PI * 0.46 * phase;
+        pose.bKnee = 0.02;
+        pose.fShoulder = 0.4; pose.bShoulder = -0.5;
+      } else if (m.anim === 'FIREBALL_CAST' || m.anim === 'PROJECTILE') {
+        pose.torsoTilt = isStartup ? -0.22 : 0.28 * phase;
+        pose.fShoulder = isStartup ? 0.6 : -Math.PI / 2 * phase;
+        pose.fElbow = 0;
+        pose.bShoulder = isStartup ? 0.7 : -Math.PI / 2 * phase;
+        pose.bElbow = 0;
+        pose.fHip = -0.42; pose.fKnee = 0.45;
+      } else if (m.anim === 'RISING_UPPERCUT' || m.anim === 'UPPERCUT') {
+        pose.hipY = -52;
+        pose.torsoTilt = -0.24 * phase;
+        pose.bShoulder = -Math.PI * 0.88 * phase;
+        pose.bElbow = -0.10 * phase;
+        pose.fShoulder = 0.55; pose.fElbow = -1.2;
+        pose.fHip = -0.95; pose.fKnee = 1.4;
+        pose.bHip = 0.25;  pose.bKnee = 0.15;
+      } else if (m.anim === 'JUMP_CRUSH_STOMP') {
+        pose.hipY = -44;
+        pose.torsoTilt = 0.32;
+        pose.fHip = -0.35; pose.fKnee = 0.15;
+        pose.bHip = -0.25; pose.bKnee = 0.15;
+        pose.fShoulder = -2.1; pose.fElbow = -0.5;
+        pose.bShoulder = -2.0; pose.bElbow = -0.5;
       } else if (m.anim === 'GRAB_ATTEMPT') {
         pose.torsoTilt = 0.22 * phase;
         pose.fShoulder = -Math.PI / 2 * phase; pose.fElbow = 0;
@@ -1003,33 +1673,34 @@ class Fighter {
         pose.bHip = -0.5; pose.bKnee = 1.15;
         pose.fShoulder = (-Math.PI * 0.35) * phase - 0.5 * (1 - phase);
         pose.fElbow = -0.05 * phase - 0.9 * (1 - phase);
-      } else if (m.anim === 'AIR_STRAIGHT') {
+      } else if (m.anim === 'AIR_CROSS' || m.anim === 'AIR_STRAIGHT') {
         pose.hipY = -52;
         pose.torsoTilt = 0.28 * phase;
         pose.fHip = -0.75; pose.fKnee = 1.25;
         pose.bHip = -0.65; pose.bKnee = 1.25;
         pose.bShoulder = (-Math.PI * 0.48) * phase;
         pose.bElbow = -0.05 * phase;
-      } else if (m.anim === 'AIR_HEAVY_PUNCH') {
+      } else if (m.anim === 'AIR_HAMMER_SMASH' || m.anim === 'AIR_HEAVY_PUNCH') {
         pose.hipY = -50;
         pose.torsoTilt = isStartup ? -0.25 : 0.42 * phase;
         pose.fHip = -0.95; pose.fKnee = 1.4;
         pose.bHip = -0.4;  pose.bKnee = 1.1;
         pose.bShoulder = isStartup ? -2.2 : (-Math.PI * 0.30) * phase;
         pose.bElbow = isStartup ? -0.8 : -0.05;
-      } else if (m.anim === 'AIR_LOW_KICK') {
+      } else if (m.anim === 'AIR_KNEE_DROP' || m.anim === 'AIR_LOW_KICK') {
         pose.hipY = -50;
         pose.torsoTilt = 0.15;
         pose.fHip = (-Math.PI * 0.34) * phase - 0.8 * (1 - phase);
         pose.fKnee = 0.45 * phase + 1.2 * (1 - phase);
         pose.bHip = -0.45; pose.bKnee = 1.25;
-      } else if (m.anim === 'AIR_MID_KICK') {
+        pose.fShoulder = -0.6; pose.fElbow = -1.1;
+      } else if (m.anim === 'AIR_SIDE_BLADE' || m.anim === 'AIR_MID_KICK') {
         pose.hipY = -52;
         pose.torsoTilt = -0.28 * phase;
         pose.fHip = (-Math.PI * 0.46) * phase - 0.7 * (1 - phase);
         pose.fKnee = 0.04 * phase + 1.1 * (1 - phase);
         pose.bHip = -0.85; pose.bKnee = 1.45;
-      } else if (m.anim === 'AIR_HEAVY_KICK') {
+      } else if (m.anim === 'AIR_WHEEL_KICK' || m.anim === 'AIR_HEAVY_KICK') {
         pose.hipY = -50;
         pose.torsoTilt = 0.26 * phase;
         pose.fHip = -0.95; pose.fKnee = 1.45;
@@ -1041,17 +1712,31 @@ class Fighter {
     return pose;
   }
 
-  // Renders the 3-Button QTE Wake-up Prompt & Timer Bar above a Knocked Down Fighter
   drawKnockdownQTE(ctx) {
     if (this.state !== 'KNOCKDOWN') return;
-
-    const qteWinFrames = Math.round(GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS * 60);
-    const totalPenaltyFrames = Math.round((GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS + GameConfig.KNOCKDOWN.PENALTY_ADD_SECONDS) * 60);
 
     ctx.save();
     const boxY = this.y - 102;
 
-    // 1. Draw 3 QTE Button Boxes (Green = Completed, Gold = Current Target, Grey = Pending)
+    if (this.autoWakeupActive) {
+      const barW = 148;
+      const ratio = Math.max(0, this.autoWakeupFramesLeft / 30);
+      ctx.fillStyle = '#111624';
+      ctx.fillRect(this.x - barW / 2, boxY - 8, barW, 8);
+      ctx.fillStyle = '#00ff88';
+      ctx.fillRect(this.x - barW / 2, boxY - 8, barW * ratio, 8);
+
+      ctx.font = "900 11px monospace";
+      ctx.fillStyle = '#00ff88';
+      ctx.textAlign = 'center';
+      ctx.fillText(this.autoWakeupLabel || "AUTO WAKEUP (1.0s)", this.x, boxY - 14);
+      ctx.restore();
+      return;
+    }
+
+    const qteWinFrames = Math.round(GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS * 60);
+    const totalPenaltyFrames = Math.round((GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS + GameConfig.KNOCKDOWN.PENALTY_ADD_SECONDS) * 60);
+
     const spacing = 44;
     const startX = this.x - spacing;
     for (let i = 0; i < this.qteSequence.length; i++) {
@@ -1071,7 +1756,6 @@ class Fighter {
       ctx.fillText(this.qteSequence[i], bx, boxY - 7);
     }
 
-    // 2. Draw QTE Timer / Penalty Progress Bar
     const barW = 128;
     ctx.fillStyle = '#111624';
     ctx.fillRect(this.x - barW / 2, boxY + 5, barW, 7);
@@ -1092,12 +1776,12 @@ class Fighter {
       ctx.fillText(`PENALTY WAIT: ${remSec}s`, this.x, boxY - 28);
     }
 
-    // 3. Show 2-Bar Reversal Hint if fighter has >= 200 Super Meter
-    if (this.superMeter >= GameConfig.REVERSAL.SUPER_COST) {
+    const revCost = (GameConfig.REVERSAL && GameConfig.REVERSAL.SUPER_COST) || 200;
+    if (this.superMeter >= revCost) {
       ctx.font = "800 10px monospace";
       ctx.fillStyle = '#ff0066';
       ctx.textAlign = 'center';
-      ctx.fillText(`PRESS LB / [P] FOR 2-BAR REVERSAL!`, this.x, boxY + 24);
+      ctx.fillText("PRESS LB / [P] FOR 2-BAR REVERSAL!", this.x, boxY + 24);
     }
 
     ctx.restore();
@@ -1127,74 +1811,79 @@ class Fighter {
     const p = this.data.proportions || { torsoW: 34, torsoH: 44, upperArmL: 22, lowerArmL: 22, upperLegL: 24, lowerLegL: 24 };
     const pose = this.computePose();
 
-    let frontStroke = this.data.color;
-    let frontFill = '#1b263e';
-    const backStroke = '#3b4f78';
-    const backFill = '#101726';
+    // Critical: Render SpongeBob SquarePants if character is TITAN / isSpongeBob!
+    if (this.charKey === 'TITAN' || this.data.isSpongeBob) {
+      this.drawSpongeBobBody(ctx, p, pose);
+    } else {
+      let frontStroke = this.data.color;
+      let frontFill = '#1b263e';
+      const backStroke = '#3b4f78';
+      const backFill = '#101726';
 
-    if (this.state === 'HIT' || this.state === 'AIR_HIT' || this.state === 'OTG_HIT') {
-      frontStroke = '#ff2255';
-      frontFill = '#4a1528';
-    } else if (this.state === 'PERFECT_BLOCK' || this.state === 'WAKEUP') {
-      frontStroke = '#00ff88';
-      frontFill = '#113828';
-    } else if (this.state === 'THROW_TECH') {
-      frontStroke = '#ffdf33';
-      frontFill = '#3b3212';
-    } else if (this.state === 'BLOCK') {
-      frontStroke = '#44aaff';
+      if (this.state === 'HIT' || this.state === 'AIR_HIT' || this.state === 'OTG_HIT') {
+        frontStroke = '#ff2255';
+        frontFill = '#4a1528';
+      } else if (this.state === 'PERFECT_BLOCK' || this.state === 'WAKEUP') {
+        frontStroke = '#00ff88';
+        frontFill = '#113828';
+      } else if (this.state === 'THROW_TECH') {
+        frontStroke = '#ffdf33';
+        frontFill = '#3b3212';
+      } else if (this.state === 'BLOCK') {
+        frontStroke = '#44aaff';
+      }
+
+      this.drawTwoSegmentLimb(
+        ctx, -6, pose.hipY, p.upperLegL, p.lowerLegL,
+        pose.bHip, pose.bKnee, 13, backFill, backStroke, 16, 7
+      );
+
+      this.drawTwoSegmentLimb(
+        ctx, 6, pose.hipY, p.upperLegL, p.lowerLegL,
+        pose.fHip, pose.fKnee, 14, frontFill, frontStroke, 17, 8
+      );
+
+      ctx.save();
+      ctx.translate(0, pose.hipY);
+      ctx.rotate(pose.torsoTilt);
+
+      this.drawTwoSegmentLimb(
+        ctx, -8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
+        pose.bShoulder, pose.bElbow, 11, backFill, backStroke, 13, 11
+      );
+
+      ctx.fillStyle = '#121a2d';
+      ctx.strokeStyle = frontStroke;
+      ctx.lineWidth = 2;
+      ctx.fillRect(-p.torsoW / 2, -8, p.torsoW, 12);
+      ctx.strokeRect(-p.torsoW / 2, -8, p.torsoW, 12);
+
+      ctx.fillStyle = frontFill;
+      ctx.strokeStyle = frontStroke;
+      ctx.lineWidth = 2.5;
+      ctx.fillRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
+      ctx.strokeRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
+
+      ctx.save();
+      ctx.translate(0, -p.torsoH - 4);
+      ctx.rotate(pose.headTilt);
+      const headW = 24;
+      const headH = 22;
+      ctx.fillStyle = '#182238';
+      ctx.strokeStyle = frontStroke;
+      ctx.fillRect(-headW / 2, -headH, headW, headH);
+      ctx.strokeRect(-headW / 2, -headH, headW, headH);
+      ctx.fillStyle = frontStroke;
+      ctx.fillRect(2, -headH + 5, 12, 6);
+      ctx.restore();
+
+      this.drawTwoSegmentLimb(
+        ctx, 8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
+        pose.fShoulder, pose.fElbow, 12, frontFill, frontStroke, 14, 12
+      );
+
+      ctx.restore();
     }
-
-    this.drawTwoSegmentLimb(
-      ctx, -6, pose.hipY, p.upperLegL, p.lowerLegL,
-      pose.bHip, pose.bKnee, 13, backFill, backStroke, 16, 7
-    );
-
-    this.drawTwoSegmentLimb(
-      ctx, 6, pose.hipY, p.upperLegL, p.lowerLegL,
-      pose.fHip, pose.fKnee, 14, frontFill, frontStroke, 17, 8
-    );
-
-    ctx.save();
-    ctx.translate(0, pose.hipY);
-    ctx.rotate(pose.torsoTilt);
-
-    this.drawTwoSegmentLimb(
-      ctx, -8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
-      pose.bShoulder, pose.bElbow, 11, backFill, backStroke, 13, 11
-    );
-
-    ctx.fillStyle = '#121a2d';
-    ctx.strokeStyle = frontStroke;
-    ctx.lineWidth = 2;
-    ctx.fillRect(-p.torsoW / 2, -8, p.torsoW, 12);
-    ctx.strokeRect(-p.torsoW / 2, -8, p.torsoW, 12);
-
-    ctx.fillStyle = frontFill;
-    ctx.strokeStyle = frontStroke;
-    ctx.lineWidth = 2.5;
-    ctx.fillRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
-    ctx.strokeRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
-
-    ctx.save();
-    ctx.translate(0, -p.torsoH - 4);
-    ctx.rotate(pose.headTilt);
-    const headW = 24;
-    const headH = 22;
-    ctx.fillStyle = '#182238';
-    ctx.strokeStyle = frontStroke;
-    ctx.fillRect(-headW / 2, -headH, headW, headH);
-    ctx.strokeRect(-headW / 2, -headH, headW, headH);
-    ctx.fillStyle = frontStroke;
-    ctx.fillRect(2, -headH + 5, 12, 6);
-    ctx.restore();
-
-    this.drawTwoSegmentLimb(
-      ctx, 8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
-      pose.fShoulder, pose.fElbow, 12, frontFill, frontStroke, 14, 12
-    );
-
-    ctx.restore();
 
     if (this.state === 'PERFECT_BLOCK') {
       ctx.strokeStyle = '#00ff88';
@@ -1248,7 +1937,6 @@ class Fighter {
 
     ctx.restore();
 
-    // Render Knockdown QTE UI or State Debug Label
     if (this.state === 'KNOCKDOWN') {
       this.drawKnockdownQTE(ctx);
     } else {
@@ -1256,10 +1944,16 @@ class Fighter {
       ctx.font = "700 11px monospace";
       ctx.fillStyle = this.state === 'WAKEUP' ? '#00ff88' : '#cbd5e1';
       ctx.textAlign = 'center';
-      if (this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) {
+      if (this.airActionsLocked && this.y < GameConfig.FLOOR_Y) {
+        ctx.fillStyle = '#ff4477';
+        ctx.fillText(`[UPPERCUT LOCK - FALLING]`, this.x, this.y - 118);
+      } else if (this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) {
         const airSec = (this.airComboFramesLeft / 60).toFixed(1);
         ctx.fillStyle = '#00ffcc';
-        ctx.fillText(`[AIR COMBO: ${airSec}s LEFT]`, this.x, this.y - 118);
+        ctx.fillText(`[AIR COMBO: ${airSec}s | LAUNCH ${this.launchCount}/2]`, this.x, this.y - 118);
+      } else if (this.launchImmune) {
+        ctx.fillStyle = '#ffaa00';
+        ctx.fillText(`[${this.state} | LAUNCH IMMUNE]`, this.x, this.y - 118);
       } else {
         ctx.fillText(`[${this.state}]`, this.x, this.y - 118);
       }

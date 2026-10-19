@@ -7,8 +7,8 @@ class GameEngine {
 
     this.state = 'MENU';
     this.currentMode = 'AI_NORMAL';
-    this.p1SelectedChar = 'REN';
-    this.p2SelectedChar = 'KIRA';
+    this.p1SelectedChar = 'TITAN'; // Default P1 to SpongeBob (TITAN) for immediate testing
+    this.p2SelectedChar = 'REN';
 
     this.p1 = null;
     this.p2 = null;
@@ -29,7 +29,9 @@ class GameEngine {
     this.targetZoom = 1.0;
     this.cameraFocusX = 500;
     this.cameraFocusY = 320;
-    this.timeScale = 1.0;
+    this.cameraOffsetY = 0;
+    // Critical: Apply 35% slower game pace (0.65)
+    this.timeScale = GameConfig.GAME_SPEED || 0.65;
 
     this.superFreezeTimer = 0;
     this.superCaster = null;
@@ -61,7 +63,7 @@ class GameEngine {
 
     const modeNames = {
       'AI_NORMAL': 'MODE: ARCADE VS AI (BEST OF 3)',
-      'TRAINING': 'MODE: TRAINING (AIR COMBO & KNOCKDOWN QTE TEST)',
+      'TRAINING': 'MODE: TRAINING (SKILLS, AIR COMBO & QTE TEST)',
       'PVP': 'MODE: 2 PLAYERS VERSUS (BEST OF 3)'
     };
     document.getElementById('selectedModeLabel').textContent = modeNames[mode] || mode;
@@ -122,6 +124,8 @@ class GameEngine {
     this.matchTimer = GameConfig.MATCH.ROUND_TIME_SECONDS * 60;
     this.cameraZoom = 1.0;
     this.targetZoom = 1.0;
+    this.cameraOffsetY = 0;
+    this.timeScale = GameConfig.GAME_SPEED || 0.65;
     this.superFreezeTimer = 0;
 
     if (this.currentMode === 'TRAINING') {
@@ -138,15 +142,16 @@ class GameEngine {
       this.state = 'PAUSED';
       const c1 = CHARACTERS[this.p1SelectedChar];
       document.getElementById('modalMoveList').innerHTML = `
-        <h3 style="color:${c1.color};margin-bottom:6px;">${c1.name} COMMAND LIST</h3>
-        ${c1.summary}
+        <h3 style="color:${c1.color};margin-bottom:6px;">${c1.name} SKILL &amp; COMMAND LIST</h3>
+        <b>Fireball (Speed by Punch):</b> <code>Down, Left + LP / MP / HP</code> (Slow / Med / Fast)<br>
+        <b>Uppercut (Ground &amp; 1x Air):</b> <code>Right, Down, Right + P</code> (Locks air actions until landing)<br>
+        <b>Frying Pan / Floor Slam (Bounce Launcher):</b> <code>Down + HP</code> (Bounces standing or downed opponent)<br>
+        <b>Heavy Jump Crush:</b> <code>Jump + Down + HK</code> (1.0s knockdown on standing/crouching only; does not hit downed)<br>
+        <b>Heavy Leg Sweep:</b> <code>Down + HK</code> (Forces QTE knockdown; hits downed as Hard Kick OTG)<br>
         <hr style="border-color:#26314d;margin:10px 0;">
-        <b>NEW COMBAT RULES:</b><br>
-        - <b>Launchers &amp; Air Combos:</b> Use <code>2HP</code> or <code>623+P</code> to launch enemies (even from the ground!). Jump up and chain air attacks up to your character's Max Air Combo Time (up to 6.0s).<br>
-        - <b>Knockdown 3-Button QTE:</b> Input the 3 buttons shown above your fighter within 2.0s to wake up immediately. Failing adds a +2.0s penalty (4.0s total).<br>
-        - <b>Grounded OTG Hit Rule:</b> Attacking a downed enemy with <code>2HK</code> or <code>214+K</code> deals OTG damage, and the enemy wakes up immediately (in 0.5s) once the OTG attack finishes.<br>
-        - <b>Ground Reversal (2 Super Bars):</b> Press <kbd>LB</kbd> / <kbd>P</kbd> while knocked down to spend 2 bars and blast away an incoming launcher/OTG attack.<br>
-        - <b>Perfect Block (<kbd>LT</kbd> / <kbd>H</kbd>):</b> Drains only ${GameConfig.PERFECT_BLOCK.DRAIN_PER_FRAME} energy per frame (requires &gt;= 1 Bar).
+        <b>GAME PACE &amp; DOWNED RULES:</b><br>
+        - <b>Game Speed:</b> Reduced by 35% (0.65x) for responsive action and motion execution.<br>
+        - Only <b>Floor Slam (2HP)</b> and grounded <b>Hard Kick (2HK / 5HK)</b> affect a downed opponent.
       `;
       document.getElementById('pause-modal').classList.remove('hidden');
     } else if (this.state === 'PAUSED') {
@@ -172,6 +177,20 @@ class GameEngine {
     this.cameraFocusY = caster.y - 65;
     this.targetZoom = GameConfig.GAUGES.SUPER_ZOOM;
     this.spawnParticles(caster.x, caster.y - 60, caster.data.color, 35, 11);
+  }
+
+  triggerFloorSlamEffect(x, y, color) {
+    this.triggerHitstop(6, 9);
+    this.shockwaves.push({
+      x,
+      y: y - 6,
+      radius: 12,
+      maxRadius: 95,
+      color,
+      life: 18,
+      maxLife: 18
+    });
+    this.spawnParticles(x, y - 8, color, 24, 8);
   }
 
   triggerReversalEffect(caster) {
@@ -219,15 +238,18 @@ class GameEngine {
   }
 
   spawnProjectile(owner, move) {
+    const spd = move.projSpeed || GameConfig.PROJECTILE_SPEED;
     this.projectiles.push({
       owner,
-      x: owner.x + owner.facing * 45,
+      x: owner.x + owner.facing * 48,
       y: owner.y - 62,
-      vx: owner.facing * GameConfig.PROJECTILE_SPEED,
+      vx: owner.facing * spd,
+      speedTier: spd,
       color: owner.data.color,
       dmg: move.dmg,
       hitstun: move.hitstun,
-      blockstun: move.blockstun
+      blockstun: move.blockstun,
+      push: move.push || 4.5
     });
   }
 
@@ -245,13 +267,13 @@ class GameEngine {
 
     const dist = Math.abs(target.x - ai.x);
 
-    // AI while Knocked Down: Uses 2-Bar Reversal if player approaches to attack, or inputs QTE buttons
     if (ai.state === 'KNOCKDOWN') {
-      if (target.state === 'ATTACK' && dist < 130 && ai.superMeter >= GameConfig.REVERSAL.SUPER_COST && Math.random() < 0.08) {
+      const revCost = (GameConfig.REVERSAL && GameConfig.REVERSAL.SUPER_COST) || 200;
+      if (target.state === 'ATTACK' && dist < 130 && ai.superMeter >= revCost && Math.random() < 0.08) {
         input.reversalTriggered = true;
         return input;
       }
-      if (!ai.qteFailed && Math.random() < 0.04) {
+      if (!ai.autoWakeupActive && !ai.qteFailed && Math.random() < 0.04) {
         const nextBtn = ai.qteSequence[ai.qteIndex];
         if (nextBtn) input[nextBtn] = true;
       }
@@ -271,11 +293,11 @@ class GameEngine {
 
     if (dist > 95) {
       input.forward = true;
-    } else if (Math.random() < 0.045) {
+    } else if (Math.random() < 0.035) {
       const r = Math.random();
-      if (r < 0.35) { input.down = true; input.HP = true; input.anyPunch = true; } // Launcher 2HP
-      else if (r < 0.65) { input.down = true; input.HK = true; input.anyKick = true; } // OTG Sweep 2HK
-      else if (r < 0.85) { input.MP = true; input.anyPunch = true; }
+      if (r < 0.35) { input.down = true; input.HP = true; input.anyPunch = true; }
+      else if (r < 0.65) { input.down = true; input.HK = true; input.anyKick = true; }
+      else if (r < 0.85) { input.LP = true; input.anyPunch = true; }
       else { input.grabTriggered = true; }
     }
     return input;
@@ -301,6 +323,21 @@ class GameEngine {
     }
   }
 
+  updateCameraTracking() {
+    if (this.superFreezeTimer <= 0) {
+      const highestY = Math.min(this.p1.y, this.p2.y);
+      const airHeight = Math.max(0, GameConfig.FLOOR_Y - highestY);
+      const targetOffsetY = airHeight > 30 ? Math.min(95, (airHeight - 30) * 0.42) : 0;
+      this.cameraOffsetY += (targetOffsetY - this.cameraOffsetY) * 0.18;
+
+      const inAirCombo = (this.p1.state === 'AIR_HIT' || this.p2.state === 'AIR_HIT');
+      this.targetZoom = inAirCombo ? 1.06 : 1.0;
+      this.cameraFocusX = (this.p1.x + this.p2.x) / 2;
+      this.cameraFocusY = (this.p1.y + this.p2.y) / 2 - 40;
+    }
+    this.cameraZoom += (this.targetZoom - this.cameraZoom) * GameConfig.CAMERA_ZOOM_LERP;
+  }
+
   loop() {
     requestAnimationFrame(() => this.loop());
     this.frameCount++;
@@ -310,7 +347,7 @@ class GameEngine {
       return;
     }
 
-    this.cameraZoom += (this.targetZoom - this.cameraZoom) * GameConfig.CAMERA_ZOOM_LERP;
+    this.updateCameraTracking();
 
     if (this.superFreezeTimer > 0) {
       this.superFreezeTimer--;
@@ -329,10 +366,12 @@ class GameEngine {
       return;
     }
 
+    const dt = GameConfig.GAME_SPEED || 0.65;
+
     if (this.roundState === 'ROUND_INTRO') {
-      this.roundPhaseTimer--;
-      this.p1.animTick++;
-      this.p2.animTick++;
+      this.roundPhaseTimer -= dt;
+      this.p1.animTick += dt;
+      this.p2.animTick += dt;
       if (this.roundPhaseTimer <= 0) {
         this.roundState = 'FIGHTING';
       }
@@ -342,9 +381,9 @@ class GameEngine {
     }
 
     if (this.roundState === 'ROUND_OVER') {
-      this.roundPhaseTimer--;
-      this.p1.animTick++;
-      this.p2.animTick++;
+      this.roundPhaseTimer -= dt;
+      this.p1.animTick += dt;
+      this.p2.animTick += dt;
       if (this.roundPhaseTimer <= 0) {
         const req = GameConfig.MATCH.ROUNDS_TO_WIN;
         if (this.p1Rounds >= req || this.p2Rounds >= req) {
@@ -364,7 +403,6 @@ class GameEngine {
       return;
     }
 
-    const dt = this.timeScale;
     const p1In = this.inputManager.getP1Input(this.p1.facing);
     const p2In = (this.currentMode === 'PVP')
       ? this.inputManager.getP2Input(this.p2.facing)
@@ -377,13 +415,23 @@ class GameEngine {
       this.p1.update(this.p2, dt, p1In, this);
       this.p2.update(this.p1, dt, p2In, this);
 
+      for (let i = this.projectiles.length - 1; i >= 0; i--) {
+        const pr = this.projectiles[i];
+        pr.x += pr.vx * dt;
+        const target = (pr.owner === this.p1) ? this.p2 : this.p1;
+        const targetGrounded = (target.state === 'KNOCKDOWN' || target.state === 'OTG_HIT' || target.state === 'WAKEUP');
+        if (!targetGrounded && Math.abs(pr.x - target.x) < 38 && Math.abs(pr.y - (target.y - 55)) < 55) {
+          pr.owner.resolveHit(target, { dmg: pr.dmg, hitstun: pr.hitstun, blockstun: pr.blockstun, push: pr.push, vx: 3.5, vy: -3.5, type: 'mid' }, this);
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+        if (pr.x < 0 || pr.x > GameConfig.CANVAS_WIDTH) this.projectiles.splice(i, 1);
+      }
+
       if (this.currentMode === 'TRAINING') {
         if (this.p2.state === 'IDLE') {
           this.p2.hp = this.p2.maxHp;
           this.p2.superMeter = GameConfig.GAUGES.MAX_SUPER;
-        }
-        if (this.p1.state === 'IDLE' && this.p1.superMeter <= 0 && !p1In.perfectBlockHold) {
-          this.p1.superMeter = GameConfig.GAUGES.MAX_SUPER;
         }
       } else {
         if (this.matchTimer > 0) this.matchTimer -= dt;
@@ -410,6 +458,8 @@ class GameEngine {
       this.screenShake = Math.max(0, this.screenShake - 1);
     }
 
+    ctx.translate(0, this.cameraOffsetY);
+
     if (this.cameraZoom > 1.005) {
       ctx.translate(GameConfig.CANVAS_WIDTH / 2, GameConfig.CANVAS_HEIGHT / 2);
       ctx.scale(this.cameraZoom, this.cameraZoom);
@@ -419,15 +469,15 @@ class GameEngine {
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.lineWidth = 1;
     for (let x = 0; x <= 1000; x += 50) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, GameConfig.FLOOR_Y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, -150); ctx.lineTo(x, GameConfig.FLOOR_Y); ctx.stroke();
     }
-    for (let y = 0; y <= GameConfig.FLOOR_Y; y += 50) {
+    for (let y = -150; y <= GameConfig.FLOOR_Y; y += 50) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1000, y); ctx.stroke();
     }
 
     if (this.superFreezeTimer > 0 && this.superCaster) {
       ctx.fillStyle = 'rgba(4, 6, 14, 0.78)';
-      ctx.fillRect(0, 0, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT);
+      ctx.fillRect(0, -150, GameConfig.CANVAS_WIDTH, GameConfig.CANVAS_HEIGHT + 150);
 
       const radius = (GameConfig.GAUGES.SUPER_FREEZE_FRAMES - this.superFreezeTimer) * 9;
       ctx.strokeStyle = this.superCaster.data.color;
@@ -445,8 +495,23 @@ class GameEngine {
     ctx.stroke();
 
     ctx.fillStyle = 'rgba(255, 0, 102, 0.14)';
-    ctx.fillRect(0, 100, GameConfig.STAGE_LEFT, GameConfig.FLOOR_Y - 100);
-    ctx.fillRect(GameConfig.STAGE_RIGHT, 100, 55, GameConfig.FLOOR_Y - 100);
+    ctx.fillRect(0, 60, GameConfig.STAGE_LEFT, GameConfig.FLOOR_Y - 60);
+    ctx.fillRect(GameConfig.STAGE_RIGHT, 60, 55, GameConfig.FLOOR_Y - 60);
+
+    for (const pr of this.projectiles) {
+      const dir = pr.vx >= 0 ? 1 : -1;
+      const tailW = (pr.speedTier || 8) * 3.2;
+      ctx.fillStyle = pr.color;
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(pr.x - dir * tailW, pr.y - 12, dir * tailW, 24);
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = 'rgba(255, 0, 68, 0.75)';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.fillRect(pr.x - 16, pr.y - 16, 32, 32);
+      ctx.strokeRect(pr.x - 16, pr.y - 16, 32, 32);
+    }
 
     this.p1.draw(ctx);
     this.p2.draw(ctx);
@@ -584,12 +649,14 @@ class GameEngine {
     ctx.font = "800 12px 'Segoe UI', sans-serif";
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'left';
-    const p1MaxAir = (this.p1.maxAirComboFrames / 60).toFixed(1);
-    ctx.fillText(`P1: ${this.p1.data.name} | MAX AIR: ${p1MaxAir}s (${this.p1.airDamageMultiplier}x DMG)`, 40, 84);
+    const p1CanPB = (this.p1.superMeter >= GameConfig.PERFECT_BLOCK.MIN_SUPER_REQ || this.p1.state === 'PERFECT_BLOCK')
+      ? 'READY'
+      : 'LOCKED (NEED 1 BAR)';
+    ctx.fillText(`P1: ${this.p1.data.name} | GUARD(H/LT): ${p1CanPB} | AIR DASH: ${1 - this.p1.airDashCount}/1`, 40, 84);
 
     ctx.textAlign = 'right';
     const p2MaxAir = (this.p2.maxAirComboFrames / 60).toFixed(1);
-    ctx.fillText(`P2: ${this.p2.data.name} | MAX AIR: ${p2MaxAir}s (${this.p2.airDamageMultiplier}x DMG)`, 960, 84);
+    ctx.fillText(`P2: ${this.p2.data.name} | AIR: ${p2MaxAir}s | LAUNCHED: ${this.p2.launchCount}/2`, 960, 84);
 
     ctx.textAlign = 'center';
     ctx.font = "900 32px 'Segoe UI', sans-serif";
@@ -614,7 +681,7 @@ class GameEngine {
 
     if (this.p1.bannerTimer > 0 && this.p1.lastMoveBanner) {
       ctx.fillStyle = 'rgba(0, 240, 255, 0.18)';
-      ctx.fillRect(162, 92, 310, 28);
+      ctx.fillRect(162, 92, 340, 28);
       ctx.font = "800 14px 'Segoe UI', sans-serif";
       ctx.fillStyle = '#00f0ff';
       ctx.fillText(`> ${this.p1.lastMoveBanner}`, 172, 111);

@@ -137,8 +137,8 @@ class InputManager {
     };
 
     const shortcutGrab = !!this.justPressed['KeyG'];
-    let dedicatedReversal = !!this.justPressed['KeyP'];     // Key P / Xbox LB = Ground Reversal (2 Bars)
-    let dedicatedPerfectBlock = !!this.keys['KeyH'];        // Key H / Xbox LT = Perfect Block
+    let dedicatedReversal = !!this.justPressed['KeyP'];
+    let dedicatedPerfectBlock = !!this.keys['KeyH'];
     let dedicatedDash = !!(this.justPressed['ShiftLeft'] || this.justPressed['KeyF']);
 
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -174,8 +174,8 @@ class InputManager {
       if (isPressed(2)) rawHold.LP = true;
       if (isPressed(0)) rawHold.LK = true;
 
-      if (checkJust(4)) dedicatedReversal = true;       // Xbox LB = Ground Reversal
-      if (isPressed(6)) dedicatedPerfectBlock = true;   // Xbox LT = Perfect Block
+      if (checkJust(4)) dedicatedReversal = true;
+      if (isPressed(6)) dedicatedPerfectBlock = true;
       if (checkJust(10) || checkJust(8)) dedicatedDash = true;
     }
 
@@ -279,10 +279,11 @@ class MotionBuffer {
       this.pushVisual(dashTriggered === 6 ? 'DASH (BTN)' : 'BACKDASH (BTN)', '#00ff88');
     }
 
+    // Works both on the ground and while airborne for Air Dash
     if (horizDir !== this.lastHorizDir) {
       if (horizDir === 5 && (this.lastHorizDir === 6 || this.lastHorizDir === 4)) {
         this.lastHorizReleaseFrame = frameCount;
-      } else if ((horizDir === 6 || horizDir === 4) && this.lastHorizDir === 5 && !input.up) {
+      } else if ((horizDir === 6 || horizDir === 4) && this.lastHorizDir === 5) {
         const pressDelta = frameCount - this.lastHorizPressFrame;
         const releaseDelta = frameCount - this.lastHorizReleaseFrame;
 
