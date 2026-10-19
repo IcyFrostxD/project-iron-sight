@@ -1,12 +1,11 @@
 // js/combat.js
 window.FighterCombat = {
-  // Returns post-attack cooldown frames based on attack strength (Heavy = 0.323s)
   getPostAttackDelayFrames(moveKey, moveObj) {
     const dCfg = GameConfig.ATTACK_DELAY || { LIGHT_SECONDS: 0.115, MEDIUM_SECONDS: 0.200, HEAVY_SECONDS: 0.323 };
     if (!moveKey) return Math.round(dCfg.LIGHT_SECONDS * 60);
 
     if (moveKey.endsWith('HP') || moveKey.endsWith('HK') || (moveObj && (moveObj.isFloorSlam || moveObj.isHeavySweep || moveObj.isUppercut))) {
-      return Math.round(dCfg.HEAVY_SECONDS * 60); // Exact 0.323s
+      return Math.round(dCfg.HEAVY_SECONDS * 60);
     }
     if (moveKey.endsWith('MP') || moveKey.endsWith('MK')) {
       return Math.round(dCfg.MEDIUM_SECONDS * 60);
@@ -117,12 +116,11 @@ window.FighterCombat = {
     engine.triggerHitstop(move.launcher || move.isUppercut || move.isAirFloorSlam || move.superLevel ? 9 : 5, move.launcher || move.isUppercut || move.isAirFloorSlam ? 8 : 3);
     engine.spawnParticles((attacker.x + opponent.x) / 2, opponent.y - 45, attacker.data.color, 18, 7);
 
-    // 4A. Critical: Air Down + Heavy Punch (`82HP` / Jump + Down + HP)
-    // Slams airborne enemy into the floor for an immediate 2nd-round bounce AND pulls attacker down to floor immediately!
+    // 4A. Air Down + Heavy Punch (`82HP` / Jump + Down + HP):
+    // Slams airborne enemy into floor for immediate 2nd bounce AND pulls attacker down to floor immediately!
     if (move.isAirFloorSlam && wasTargetAirborne) {
       const canBounceAgain = (!opponent.launchImmune && opponent.launchCount < 2);
 
-      // Immediately bring attacker down to the floor ready to follow up!
       attacker.y = GameConfig.FLOOR_Y;
       attacker.vy = 0;
       attacker.vx = attacker.facing * 2.0;
@@ -131,10 +129,11 @@ window.FighterCombat = {
       attacker.currentMoveKey = null;
       attacker.airDashCount = 0;
       attacker.hasAirAttacked = false;
+      attacker.usedAirHeavy = false;
+      attacker.airNormalsLocked = false;
       attacker.airLightCount = 0;
       attacker.airMediumCount = 0;
 
-      // Snap opponent to floor level for the slam impact
       opponent.y = GameConfig.FLOOR_Y - 10;
       engine.triggerFloorSlamEffect(opponent.x, GameConfig.FLOOR_Y, attacker.data.color);
 
@@ -209,7 +208,7 @@ window.FighterCombat = {
       return;
     }
 
-    // 4G. Ground Floor Slam (`2HP`) Bounce Launch -> Resets Air Light & Medium Counters to 0!
+    // 4G. Ground Floor Slam (`2HP`) Bounce Launch -> Resets Air Hit Counters to 0!
     if (canLaunchTarget && !wasTargetAirborne) {
       opponent.launchCount++;
       opponent.state = 'AIR_HIT';
@@ -219,6 +218,8 @@ window.FighterCombat = {
 
       attacker.airLightCount = 0;
       attacker.airMediumCount = 0;
+      attacker.usedAirHeavy = false;
+      attacker.airNormalsLocked = false;
 
       opponent.vy = -7.2;
       opponent.vx = attacker.facing * 1.2;
@@ -232,38 +233,55 @@ window.FighterCombat = {
       return;
     }
 
-    // 4H. Critical: Mid-Air Combo Hit Rules (Max 3 Lights, Max 1 Medium, Special Resets, Anti-Infinite Loop)
+    // 4H. Critical: Mid-Air Combo Hit Rules
     if (wasTargetAirborne) {
       opponent.juggleCount++;
       const moveKey = attacker.currentMoveKey || '';
       const isAirLight = (moveKey === '8LP' || moveKey === '8LK');
       const isAirMedium = (moveKey === '8MP' || moveKey === '8MK');
-      const maxLights = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.MAX_LIGHT_HITS) || 3;
-      const maxMediums = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.MAX_MEDIUM_HITS) || 1;
+      const isAirHeavy = (moveKey === '8HP' || moveKey === '8HK' || move.isAirHeavy);
 
-      // Special move that lifts and resets air light/medium counters
+      const maxLights = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.MAX_LIGHT_HITS) || 3;
+      const maxMediums = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.MAX_MEDIUM_HITS) || 2;
+
+      // Critical: Air Heavy Attack (8HP / 8HK) -> Straight Strike, Does NOT lift, makes opponent fall faster!
+      // Locks further normal air attacks, but player can still cancel into Dive Slam (82HP / 82HK)!
+      if (isAirHeavy) {
+        opponent.state = 'AIR_HIT';
+        const fastFallVy = (GameConfig.AIR_COMBO && GameConfig.AIR_COMBO.VICTIM_AIR_HEAVY_FALL_VY) || 4.8;
+        opponent.vy = Math.max(opponent.vy, fastFallVy);
+        opponent.vx = attacker.facing * 2.2;
+
+        // Attacker does not bounce upward on Air Heavy, falls naturally unless they input 82HP / 82HK
+        attacker.vy = Math.max(attacker.vy, 1.2);
+        attacker.usedAirHeavy = true;
+        attacker.airNormalsLocked = true;
+        engine.addFloatingText("AIR HEAVY STRIKE! (FAST FALL)", opponent.x, opponent.y - 110, '#ffaa00', 19);
+        return;
+      }
+
       if (move.special && move.resetsAirCombo) {
         attacker.airLightCount = 0;
         attacker.airMediumCount = 0;
-        engine.addFloatingText("AIR SPECIAL RESET! (0/3 LIGHTS)", opponent.x, opponent.y - 115, '#00ff88', 18);
+        attacker.usedAirHeavy = false;
+        attacker.airNormalsLocked = false;
+        engine.addFloatingText("AIR SPECIAL RESET!", opponent.x, opponent.y - 115, '#00ff88', 18);
       } else if (isAirLight) {
         attacker.airLightCount++;
         if (attacker.airLightCount > maxLights) {
-          // Exceeded 3 Light air attacks -> Victim drops immediately!
           opponent.airComboFramesLeft = 0;
           opponent.vy = 8.5;
           opponent.vx = attacker.facing * 4.0;
-          engine.addFloatingText("AIR LIGHT LIMIT (>3)! DROP!", opponent.x, opponent.y - 110, '#ff4477', 20);
+          engine.addFloatingText(`AIR LIGHT LIMIT (>${maxLights})! DROP!`, opponent.x, opponent.y - 110, '#ff4477', 20);
           return;
         }
       } else if (isAirMedium) {
         attacker.airMediumCount++;
         if (attacker.airMediumCount > maxMediums) {
-          // Exceeded 1 Medium air attack -> Victim drops immediately! (Prevents 2 Light + 1 Med infinite loop)
           opponent.airComboFramesLeft = 0;
           opponent.vy = 8.5;
           opponent.vx = attacker.facing * 4.0;
-          engine.addFloatingText("AIR MEDIUM LIMIT (>1)! DROP!", opponent.x, opponent.y - 110, '#ff4477', 20);
+          engine.addFloatingText(`AIR MEDIUM LIMIT (>${maxMediums})! DROP!`, opponent.x, opponent.y - 110, '#ff4477', 20);
           return;
         }
       }

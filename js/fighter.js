@@ -31,11 +31,12 @@ class Fighter {
     this.usedAirUppercut = false;
     this.airActionsLocked = false;
 
-    // Air Combo Hit Counters (Max 3 Lights, Max 1 Medium per air sequence)
+    // Air Combo Hit Counters & Air Heavy Lockout
     this.airLightCount = 0;
     this.airMediumCount = 0;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false; // Locks normal air punches/kicks after 8HP/8HK, while still allowing 82HP/82HK Dive Slam
 
-    // Post-Attack Cooldown Timer (0.323s after Heavy, faster for Light/Medium)
     this.attackDelayTimer = 0;
 
     this.currentMoveKey = null;
@@ -113,6 +114,20 @@ class Fighter {
         selfForwardVX: 3.0,
         type: 'overhead'
       });
+    }
+
+    // Critical: Configure Air Heavy Punch (8HP) as a Straight Punch (`AIR_STRAIGHT`) & mark 8HP/8HK as single-use Air Heavy
+    if (m['8HP']) {
+      m['8HP'].name = 'Air Heavy Straight (j.HP)';
+      m['8HP'].anim = 'AIR_STRAIGHT';
+      m['8HP'].isAirHeavy = true;
+      m['8HP'].vy = 4.8;
+      m['8HP'].cancel = true; // Can cancel into Dive Slam (82HP / 82HK)
+    }
+    if (m['8HK']) {
+      m['8HK'].isAirHeavy = true;
+      m['8HK'].vy = 4.8;
+      m['8HK'].cancel = true; // Can cancel into Dive Slam (82HP / 82HK)
     }
 
     // Add Air Down + Heavy Punch (82HP): Slams airborne enemy to bounce off floor while caster follows down immediately!
@@ -205,6 +220,8 @@ class Fighter {
     this.airActionsLocked = false;
     this.airLightCount = 0;
     this.airMediumCount = 0;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false;
     this.attackDelayTimer = 0;
     this.currentMove = null;
     this.currentMoveKey = null;
@@ -234,6 +251,8 @@ class Fighter {
     this.airComboFramesLeft = 0;
     this.usedAirUppercut = false;
     this.airActionsLocked = false;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false;
     this.knockdownElapsed = 0;
     this.qteIndex = 0;
     this.qteFailed = false;
@@ -254,7 +273,7 @@ class Fighter {
       this.autoWakeupFramesLeft = 30;
       this.autoWakeupLabel = "2ND LAUNCH: AUTO WAKEUP (1.0s)";
       this.launchImmune = true;
-      this.launchImmuneTimer = 30;
+      this.launchImmuneTimer = 50; // 2.0 seconds (120 frames) Floor Slam Immune after waking up
       this.qteSequence = [];
       return;
     }
@@ -328,6 +347,12 @@ class Fighter {
 
     if (moveObj.airMove) {
       this.hasAirAttacked = true;
+    }
+
+    // Critical: If using Air Heavy (8HP / 8HK), mark it used (1x limit) and lock all further normal air attacks!
+    if (moveObj.isAirHeavy || moveKey === '8HP' || moveKey === '8HK') {
+      this.usedAirHeavy = true;
+      this.airNormalsLocked = true;
     }
 
     if (moveObj.isUppercut) {
@@ -474,8 +499,6 @@ class Fighter {
     const isGroundNeutral = !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || this.state === 'DASH');
     const isAirNeutral = isAirborne && ((this.state === 'JUMP' || this.state === 'AIR_DASH') && !this.hasAirAttacked);
     const canCancelNow = this.canCancel();
-
-    // Enforce Post-Attack Cooldown Delay (0.323s after Heavy, faster for Light/Medium) when initiating a new attack from neutral
     const isAttackReady = (this.attackDelayTimer <= 0 || canCancelNow);
 
     // Super Arts
@@ -512,7 +535,7 @@ class Fighter {
     // Uppercut Skill: Right, Down, Right + Punch (623P)
     if (isAttackReady && input.anyPunch && this.isUppercutMotion(frameCount)) {
       if (isAirborne) {
-        if (!this.usedAirUppercut && (isAirNeutral || canCancelNow) && this.data.moves['8_623P']) {
+        if (!this.usedAirUppercut && !this.airNormalsLocked && (isAirNeutral || canCancelNow) && this.data.moves['8_623P']) {
           this.motionBuffer.clearMotions();
           this.startMove('8_623P');
           engine.addFloatingText("AIR UPPERCUT! (AIR LOCKED)", this.x, this.y - 115, '#00ffcc', 20);
@@ -538,7 +561,7 @@ class Fighter {
     if (dashTriggered) {
       const isForwardDash = (dashTriggered === 6);
       if (isAirborne) {
-        if ((this.state === 'JUMP' || canCancelNow) && this.airDashCount < this.maxAirDashes) {
+        if (!this.airNormalsLocked && (this.state === 'JUMP' || canCancelNow) && this.airDashCount < this.maxAirDashes) {
           this.airDashCount++;
           this.state = 'AIR_DASH';
           this.dashTimer = 12;
@@ -566,26 +589,39 @@ class Fighter {
     const btn = input.HP ? 'HP' : input.MP ? 'MP' : input.LP ? 'LP'
               : input.HK ? 'HK' : input.MK ? 'MK' : input.LK ? 'LK' : null;
 
-    if (btn && isAttackReady) {
-      // Airborne Attacks: Check Air Down + HP (82HP Bounce Slam) and Air Down + HK (82HK Jump Crush) first!
-      if (isAirborne && (isAirNeutral || canCancelNow)) {
-        if (input.down && btn === 'HP' && this.data.moves['82HP']) {
+    if (btn) {
+      // Critical: Airborne Attack Routing
+      if (isAirborne) {
+        const canDoDiveSlam = (this.state === 'JUMP' || this.state === 'AIR_DASH' || canCancelNow);
+
+        // 1. Dive Slam Moves (Jump + Down + HP `82HP` and Jump + Down + HK `82HK`)
+        // Always allowed even after using Air Heavy (`airNormalsLocked = true`)!
+        if (canDoDiveSlam && input.down && btn === 'HP' && this.data.moves['82HP']) {
           this.startMove('82HP');
           engine.addFloatingText("AIR FLOOR BOUNCE SLAM!", this.x, this.y - 110, '#00ffcc', 19);
           return;
         }
-        if (input.down && btn === 'HK' && this.data.moves['82HK']) {
+        if (canDoDiveSlam && input.down && btn === 'HK' && this.data.moves['82HK']) {
           this.startMove('82HK');
           engine.addFloatingText("HEAVY JUMP CRUSH!", this.x, this.y - 110, '#ffaa00', 19);
           return;
         }
-        if (this.data.moves['8' + btn]) {
-          this.startMove('8' + btn);
-          return;
+
+        // 2. Normal Air Attacks (`8LP`, `8MP`, `8HP`, `8LK`, `8MK`, `8HK`)
+        // Blocked completely if `airNormalsLocked` is true (after using `8HP` or `8HK`)!
+        if (!this.airNormalsLocked && isAttackReady && (isAirNeutral || canCancelNow)) {
+          if ((btn === 'HP' || btn === 'HK') && this.usedAirHeavy) {
+            return;
+          }
+          if (this.data.moves['8' + btn]) {
+            this.startMove('8' + btn);
+            return;
+          }
         }
       }
 
-      if (!isAirborne && (isGroundNeutral || canCancelNow)) {
+      // Grounded Attacks
+      if (!isAirborne && isAttackReady && (isGroundNeutral || canCancelNow)) {
         const specialMotion = this.motionBuffer.detectSpecialMotion(frameCount);
         if (specialMotion) {
           const exactMoveKey = specialMotion + btn;
@@ -631,6 +667,8 @@ class Fighter {
         this.airDashCount = 0;
         this.usedAirUppercut = false;
         this.airActionsLocked = false;
+        this.usedAirHeavy = false;
+        this.airNormalsLocked = false;
         this.currentMove = null;
         this.currentMoveKey = null;
         this.groundChainList = [];
@@ -723,7 +761,7 @@ class Fighter {
 
       if (!this.qteFailed && this.knockdownElapsed >= qteWinFrames) {
         this.qteFailed = true;
-        engine.addFloatingText("QTE FAILED! +2.0s PENALTY", this.x, this.y - 105, '#ff2255', 18);
+        engine.addFloatingText("QTE FAILED! PENALTY WAIT", this.x, this.y - 105, '#ff2255', 18);
       }
 
       if (this.knockdownElapsed >= totalPenaltyFrames) {
@@ -879,7 +917,6 @@ class Fighter {
         }
       }
 
-      // When Attack finishes, apply the tier-based Post-Attack Cooldown Delay (0.323s for Heavy, faster for Light/Med)
       if (this.currentMove && this.moveTimer >= m.startup + m.active + m.recovery) {
         this.attackDelayTimer = window.FighterCombat.getPostAttackDelayFrames(this.currentMoveKey, m);
         this.state = (this.y < GameConfig.FLOOR_Y) ? 'JUMP' : 'IDLE';
@@ -933,6 +970,8 @@ class Fighter {
       this.airDashCount = 0;
       this.usedAirUppercut = false;
       this.airActionsLocked = false;
+      this.usedAirHeavy = false;
+      this.airNormalsLocked = false;
       this.hasAirAttacked = false;
 
       if (this.state === 'AIR_HIT') {

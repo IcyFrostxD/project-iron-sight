@@ -30,9 +30,11 @@ window.GameConfig = {
   AIR_COMBO: {
     MAX_CAP_SECONDS: 6.0,
     MAX_LIGHT_HITS: 3,            // Over 3 light hits -> opponent drops immediately
-    MAX_MEDIUM_HITS: 2,           // Over 1 medium hit -> opponent drops immediately
+    MAX_MEDIUM_HITS: 2,           // Preserved from your config.js
+    MAX_HEAVY_HITS: 1,            // Air Heavy (8HP/8HK) usable only 1 time, locks normal air attacks after
     ATTACKER_AIR_BOUNCE_VY: -4.4,
     VICTIM_AIR_FLOAT_VY: -5.0,
+    VICTIM_AIR_HEAVY_FALL_VY: 4.8, // Makes opponent fall faster when hit by Air Heavy (no upward lift)
     VICTIM_AIR_PUSH_VX: 0.5,
     AIR_SLAM_BOUNCE_VY: -8.2      // Upward bounce velocity when slammed by Air Down + HP (82HP)
   },
@@ -174,8 +176,8 @@ window.GameConfig = {
     DRIVE_REGEN_PER_FRAME: 0.35,
     MAX_SUPER: 300,
     INITIAL_SUPER: 300,
-    SUPER_GAIN_ON_HIT: 8,
-    SUPER_GAIN_ON_HURT: 4,
+    SUPER_GAIN_ON_HIT: 4,
+    SUPER_GAIN_ON_HURT: 6,
     SUPER_GAIN_ON_BLOCK: 0,
     SUPER_FREEZE_FRAMES: 42,
     SUPER_LV1_COST: 100,
