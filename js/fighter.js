@@ -35,7 +35,7 @@ class Fighter {
     this.airLightCount = 0;
     this.airMediumCount = 0;
     this.usedAirHeavy = false;
-    this.airNormalsLocked = false; // Locks normal air punches/kicks after 8HP/8HK, while still allowing 82HP/82HK Dive Slam
+    this.airNormalsLocked = false;
 
     this.attackDelayTimer = 0;
 
@@ -53,6 +53,7 @@ class Fighter {
     this.airComboFramesLeft = 0;
     this.airComboMaxFrames = 0;
 
+    // Floor Slam / Launch Tracking
     this.launchCount = 0;
     this.autoWakeupActive = false;
     this.autoWakeupFramesLeft = 0;
@@ -116,21 +117,21 @@ class Fighter {
       });
     }
 
-    // Critical: Configure Air Heavy Punch (8HP) as a Straight Punch (`AIR_STRAIGHT`) & mark 8HP/8HK as single-use Air Heavy
+    // Air Heavy Punch (8HP) as Straight Punch & 1x limit for 8HP/8HK
     if (m['8HP']) {
       m['8HP'].name = 'Air Heavy Straight (j.HP)';
       m['8HP'].anim = 'AIR_STRAIGHT';
       m['8HP'].isAirHeavy = true;
       m['8HP'].vy = 4.8;
-      m['8HP'].cancel = true; // Can cancel into Dive Slam (82HP / 82HK)
+      m['8HP'].cancel = true;
     }
     if (m['8HK']) {
       m['8HK'].isAirHeavy = true;
       m['8HK'].vy = 4.8;
-      m['8HK'].cancel = true; // Can cancel into Dive Slam (82HP / 82HK)
+      m['8HK'].cancel = true;
     }
 
-    // Add Air Down + Heavy Punch (82HP): Slams airborne enemy to bounce off floor while caster follows down immediately!
+    // Air Down + Heavy Punch (82HP): Slams airborne enemy to bounce off floor while caster follows down immediately
     m['82HP'] = {
       name: this.data.isSpongeBob ? 'Air Frying Pan Bounce Slam (j.2HP)' : 'Air Meteor Bounce Slam (j.2HP)',
       anim: 'AIR_FLOOR_SLAM',
@@ -268,12 +269,13 @@ class Fighter {
       return;
     }
 
+    // Critical: 2nd Launch Fall triggers 1.0s Auto-Wakeup and sets Floor Slam Immune timer to 50 frames
     if (this.launchCount >= 2 && mode !== 'SWEEP_QTE') {
       this.autoWakeupActive = true;
       this.autoWakeupFramesLeft = 30;
       this.autoWakeupLabel = "2ND LAUNCH: AUTO WAKEUP (1.0s)";
       this.launchImmune = true;
-      this.launchImmuneTimer = 50; // 2.0 seconds (120 frames) Floor Slam Immune after waking up
+      this.launchImmuneTimer = 50; // Updated to 50 frames as requested
       this.qteSequence = [];
       return;
     }
@@ -288,6 +290,7 @@ class Fighter {
     }
   }
 
+  // Critical: Always resets launchCount back to 0 when waking up!
   enterWakeup(engine, labelText) {
     this.state = 'WAKEUP';
     const wakeSec = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS) || 0.5;
@@ -297,6 +300,7 @@ class Fighter {
     this.vy = 0;
     this.wasHitOnGround = false;
     this.autoWakeupActive = false;
+    this.launchCount = 0; // Always reset launch counter to 0 upon waking up
     if (engine && labelText) {
       engine.addFloatingText(labelText, this.x, this.y - 105, '#00ff88', 18);
     }
@@ -349,7 +353,6 @@ class Fighter {
       this.hasAirAttacked = true;
     }
 
-    // Critical: If using Air Heavy (8HP / 8HK), mark it used (1x limit) and lock all further normal air attacks!
     if (moveObj.isAirHeavy || moveKey === '8HP' || moveKey === '8HK') {
       this.usedAirHeavy = true;
       this.airNormalsLocked = true;
@@ -440,6 +443,7 @@ class Fighter {
         this.superMeter -= revCost;
         this.wasHitOnGround = false;
         this.autoWakeupActive = false;
+        this.launchCount = 0; // Reset launch count on Reversal wakeup
         this.startMove('REVERSAL');
         engine.triggerReversalEffect(this);
         return;
@@ -590,12 +594,9 @@ class Fighter {
               : input.HK ? 'HK' : input.MK ? 'MK' : input.LK ? 'LK' : null;
 
     if (btn) {
-      // Critical: Airborne Attack Routing
       if (isAirborne) {
         const canDoDiveSlam = (this.state === 'JUMP' || this.state === 'AIR_DASH' || canCancelNow);
 
-        // 1. Dive Slam Moves (Jump + Down + HP `82HP` and Jump + Down + HK `82HK`)
-        // Always allowed even after using Air Heavy (`airNormalsLocked = true`)!
         if (canDoDiveSlam && input.down && btn === 'HP' && this.data.moves['82HP']) {
           this.startMove('82HP');
           engine.addFloatingText("AIR FLOOR BOUNCE SLAM!", this.x, this.y - 110, '#00ffcc', 19);
@@ -607,8 +608,6 @@ class Fighter {
           return;
         }
 
-        // 2. Normal Air Attacks (`8LP`, `8MP`, `8HP`, `8LK`, `8MK`, `8HK`)
-        // Blocked completely if `airNormalsLocked` is true (after using `8HP` or `8HK`)!
         if (!this.airNormalsLocked && isAttackReady && (isAirNeutral || canCancelNow)) {
           if ((btn === 'HP' || btn === 'HK') && this.usedAirHeavy) {
             return;
@@ -620,7 +619,6 @@ class Fighter {
         }
       }
 
-      // Grounded Attacks
       if (!isAirborne && isAttackReady && (isGroundNeutral || canCancelNow)) {
         const specialMotion = this.motionBuffer.detectSpecialMotion(frameCount);
         if (specialMotion) {
@@ -701,7 +699,8 @@ class Fighter {
     if (this.bannerTimer > 0) this.bannerTimer -= dt;
     if (this.attackDelayTimer > 0) this.attackDelayTimer = Math.max(0, this.attackDelayTimer - dt);
 
-    if (this.launchImmune && (this.state === 'IDLE' || this.state === 'WALK')) {
+    // Critical: Count down the 50-frame Floor Slam Immune timer once the fighter has woken up, then reset to 0
+    if (this.launchImmune && this.state !== 'KNOCKDOWN' && this.state !== 'AIR_HIT') {
       this.launchImmuneTimer -= dt;
       if (this.launchImmuneTimer <= 0) {
         this.launchImmune = false;
@@ -736,6 +735,7 @@ class Fighter {
       this.vx *= 0.8;
       if (this.stateTimer <= 0) {
         this.state = 'IDLE';
+        this.launchCount = 0; // Ensure launchCount is always 0 when standing up from Wakeup
         this.juggleCount = 0;
         this.wallSplatted = false;
         opponent.comboCount = 0;
