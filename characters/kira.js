@@ -43,7 +43,7 @@ window.CHARACTERS.KIRA = {
       name: 'Neon Heel Floor Slam (2HP)',
       anim: 'FLOOR_SLAM',
       startup: 10, active: 8, recovery: 19,
-      dmg: 66, hitstun: 42, blockstun: 16, push: 2.8, vx: 1.5, vy: -11.8,
+      dmg: 50, hitstun: 42, blockstun: 16, push: 2.8, vx: 1.5, vy: -11.8,
       launcher: true, groundBounce: true, hitsGrounded: true, isFloorSlam: true,
       type: 'mid', cancel: true, reach: 94, boxY: -65, boxH: 65
     },
@@ -53,7 +53,7 @@ window.CHARACTERS.KIRA = {
       name: 'Scissor Leg Sweep (2HK)',
       anim: 'DRAGON_SWEEP',
       startup: 9, active: 7, recovery: 19,
-      dmg: 72, hitstun: 36, blockstun: 17, push: 4.5, vx: 3.5, vy: -5.0,
+      dmg: 50, hitstun: 36, blockstun: 17, push: 4.5, vx: 3.5, vy: -5.0,
       knockdown: true, triggersQTE: true, isHeavySweep: true, hitsGrounded: true, isOtgStrike: true,
       type: 'low', cancel: false, reach: 104, boxY: -22, boxH: 24
     },
@@ -63,7 +63,7 @@ window.CHARACTERS.KIRA = {
       name: 'Light Neon Kunai Wave (214LP)',
       anim: 'FIREBALL_CAST',
       startup: 9, active: 14, recovery: 15,
-      dmg: 50, hitstun: 28, blockstun: 14, push: 3.5, vx: 2.2, vy: 0,
+      dmg: 30, hitstun: 28, blockstun: 14, push: 3.5, vx: 2.2, vy: 0,
       projectile: true, projSpeed: 5.8,
       type: 'mid', special: true, cancel: false, reach: 86, boxY: -66, boxH: 26
     },
@@ -71,7 +71,7 @@ window.CHARACTERS.KIRA = {
       name: 'Medium Neon Kunai Wave (214MP)',
       anim: 'FIREBALL_CAST',
       startup: 10, active: 14, recovery: 16,
-      dmg: 62, hitstun: 30, blockstun: 15, push: 4.0, vx: 2.8, vy: 0,
+      dmg: 30, hitstun: 30, blockstun: 15, push: 4.0, vx: 2.8, vy: 0,
       projectile: true, projSpeed: 9.2,
       type: 'mid', special: true, cancel: false, reach: 86, boxY: -66, boxH: 26
     },
@@ -79,7 +79,7 @@ window.CHARACTERS.KIRA = {
       name: 'Heavy Neon Kunai Wave (214HP)',
       anim: 'FIREBALL_CAST',
       startup: 11, active: 14, recovery: 17,
-      dmg: 76, hitstun: 32, blockstun: 16, push: 5.0, vx: 3.2, vy: 0,
+      dmg: 30, hitstun: 32, blockstun: 16, push: 5.0, vx: 3.2, vy: 0,
       projectile: true, projSpeed: 13.0,
       type: 'mid', special: true, cancel: false, reach: 86, boxY: -66, boxH: 26
     },
@@ -87,7 +87,7 @@ window.CHARACTERS.KIRA = {
       name: 'Neon Kunai Wave (214P)',
       anim: 'FIREBALL_CAST',
       startup: 10, active: 14, recovery: 16,
-      dmg: 62, hitstun: 30, blockstun: 15, push: 4.0, vx: 2.8, vy: 0,
+      dmg: 30, hitstun: 30, blockstun: 15, push: 4.0, vx: 2.8, vy: 0,
       projectile: true, projSpeed: 9.2,
       type: 'mid', special: true, cancel: false, reach: 86, boxY: -66, boxH: 26
     },
@@ -97,7 +97,7 @@ window.CHARACTERS.KIRA = {
       name: 'Spiral Sky Uppercut (236236P)',
       anim: 'RISING_UPPERCUT',
       startup: 5, active: 12, recovery: 23,
-      dmg: 105, hitstun: 46, blockstun: 19, push: 4.0, vx: 3.0, vy: -11.8,
+      dmg: 80, hitstun: 46, blockstun: 19, push: 4.0, vx: 3.0, vy: -11.8,
       selfLaunchVY: -10.2, selfForwardVX: 3.5,
       isUppercut: true, locksAirActions: true, knockdown: true, invuln: true,
       type: 'mid', special: true, cancel: false, reach: 100, boxY: -94, boxH: 56
@@ -107,7 +107,7 @@ window.CHARACTERS.KIRA = {
       anim: 'RISING_UPPERCUT',
       airMove: true,
       startup: 4, active: 12, recovery: 23,
-      dmg: 100, hitstun: 46, blockstun: 19, push: 4.0, vx: 3.2, vy: -10.8,
+      dmg: 80, hitstun: 46, blockstun: 19, push: 4.0, vx: 3.2, vy: -10.8,
       selfLaunchVY: -8.8, selfForwardVX: 3.2,
       isUppercut: true, locksAirActions: true, knockdown: true,
       type: 'overhead', special: true, cancel: false, reach: 100, boxY: -94, boxH: 56
@@ -119,7 +119,7 @@ window.CHARACTERS.KIRA = {
       anim: 'JUMP_CRUSH_STOMP',
       airMove: true,
       startup: 5, active: 16, recovery: 13,
-      dmg: 78, hitstun: 38, blockstun: 17, push: 3.8, vx: 5.0, vy: 10.0,
+      dmg: 68, hitstun: 38, blockstun: 17, push: 3.8, vx: 5.0, vy: 10.0,
       isJumpCrush: true, fixedKnockdownSec: 1.0, hitsGrounded: true, isOtgStrike: true,
       type: 'overhead', cancel: false, reach: 94, boxY: -34, boxH: 36
     },
