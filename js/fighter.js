@@ -20,19 +20,24 @@ class Fighter {
     this.drive = GameConfig.GAUGES.MAX_DRIVE;
     this.superMeter = GameConfig.GAUGES.INITIAL_SUPER;
 
-    // States: IDLE, WALK, CROUCH, JUMP, DASH, AIR_DASH, ATTACK, THROW_EXEC, THROWN,
-    // THROW_TECH, HIT, BLOCK, PERFECT_BLOCK, AIR_HIT, KNOCKDOWN, OTG_HIT, WAKEUP, VICTORY
     this.state = 'IDLE';
     this.stateTimer = 0;
     this.dashTimer = 0;
     this.dashDir = 1;
     this.afterimages = [];
 
-    // Air Dash & Uppercut Air Lock Tracking
     this.airDashCount = 0;
     this.maxAirDashes = 1;
     this.usedAirUppercut = false;
     this.airActionsLocked = false;
+
+    // Air Combo Hit Counters & Air Heavy Lockout
+    this.airLightCount = 0;
+    this.airMediumCount = 0;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false;
+
+    this.attackDelayTimer = 0;
 
     this.currentMoveKey = null;
     this.currentMove = null;
@@ -41,16 +46,14 @@ class Fighter {
     this.hasDealtHit = false;
     this.hasAirAttacked = false;
 
-    // Dynamic Ground Chain Combo & SF6 Pushback Tracking
     this.groundChainList = [];
     this.groundPushCount = 0;
     this.altLimb = false;
 
-    // Air Combo Window Tracking
     this.airComboFramesLeft = 0;
     this.airComboMaxFrames = 0;
 
-    // Launcher Nerf Tracking (1st = QTE, 2nd = 1.0s Auto-Wakeup, 3rd = Launch Immune)
+    // Floor Slam / Launch Tracking
     this.launchCount = 0;
     this.autoWakeupActive = false;
     this.autoWakeupFramesLeft = 0;
@@ -58,7 +61,6 @@ class Fighter {
     this.launchImmune = false;
     this.launchImmuneTimer = 0;
 
-    // Knockdown QTE & OTG Tracking
     this.knockdownElapsed = 0;
     this.qteSequence = [];
     this.qteIndex = 0;
@@ -83,11 +85,9 @@ class Fighter {
     this.animTick = 0;
   }
 
-  // Critical: Maps Uppercut to 623P / 8_623P (Right, Down, Right + P) and enforces grounded hit rules
   normalizeCharacterMoves() {
     const m = this.data.moves;
 
-    // Map Uppercut to 623P (Ground) and 8_623P (Air)
     if (m['236236P'] && (!m['623P'] || !m['623P'].isUppercut)) {
       m['623P'] = Object.assign({}, m['236236P'], {
         name: m['236236P'].name.replace('236236P', '623P')
@@ -117,13 +117,48 @@ class Fighter {
       });
     }
 
-    // Ensure Jump + Down + HK (82HK) cannot hit downed opponents
+    // Air Heavy Punch (8HP) as Straight Punch & 1x limit for 8HP/8HK
+    if (m['8HP']) {
+      m['8HP'].name = 'Air Heavy Straight (j.HP)';
+      m['8HP'].anim = 'AIR_STRAIGHT';
+      m['8HP'].isAirHeavy = true;
+      m['8HP'].vy = 4.8;
+      m['8HP'].cancel = true;
+    }
+    if (m['8HK']) {
+      m['8HK'].isAirHeavy = true;
+      m['8HK'].vy = 4.8;
+      m['8HK'].cancel = true;
+    }
+
+    // Air Down + Heavy Punch (82HP): Slams airborne enemy to bounce off floor while caster follows down immediately
+    m['82HP'] = {
+      name: this.data.isSpongeBob ? 'Air Frying Pan Bounce Slam (j.2HP)' : 'Air Meteor Bounce Slam (j.2HP)',
+      anim: 'AIR_FLOOR_SLAM',
+      usesPan: !!this.data.isSpongeBob,
+      airMove: true,
+      isAirFloorSlam: true,
+      startup: 6,
+      active: 14,
+      recovery: 12,
+      dmg: 78,
+      hitstun: 42,
+      blockstun: 18,
+      push: 3.5,
+      vx: 3.0,
+      vy: 10.5,
+      type: 'overhead',
+      cancel: false,
+      reach: 104,
+      boxY: -50,
+      boxH: 48
+    };
+
     if (m['82HK']) {
       m['82HK'].hitsGrounded = false;
       m['82HK'].isOtgStrike = false;
     }
 
-    // Ensure ONLY Floor Slam (2HP) and Grounded Hard Kicks (2HK, 5HK) can affect downed opponents
     Object.keys(m).forEach(key => {
       const move = m[key];
       const isFloorSlam = (key === '2HP' || move.isFloorSlam);
@@ -184,6 +219,11 @@ class Fighter {
     this.airDashCount = 0;
     this.usedAirUppercut = false;
     this.airActionsLocked = false;
+    this.airLightCount = 0;
+    this.airMediumCount = 0;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false;
+    this.attackDelayTimer = 0;
     this.currentMove = null;
     this.currentMoveKey = null;
     this.groundChainList = [];
@@ -212,6 +252,8 @@ class Fighter {
     this.airComboFramesLeft = 0;
     this.usedAirUppercut = false;
     this.airActionsLocked = false;
+    this.usedAirHeavy = false;
+    this.airNormalsLocked = false;
     this.knockdownElapsed = 0;
     this.qteIndex = 0;
     this.qteFailed = false;
@@ -227,12 +269,13 @@ class Fighter {
       return;
     }
 
+    // Critical: 2nd Launch Fall triggers 1.0s Auto-Wakeup and sets Floor Slam Immune timer to 50 frames
     if (this.launchCount >= 2 && mode !== 'SWEEP_QTE') {
       this.autoWakeupActive = true;
       this.autoWakeupFramesLeft = 30;
       this.autoWakeupLabel = "2ND LAUNCH: AUTO WAKEUP (1.0s)";
       this.launchImmune = true;
-      this.launchImmuneTimer = 300;
+      this.launchImmuneTimer = 50; // Updated to 50 frames as requested
       this.qteSequence = [];
       return;
     }
@@ -247,6 +290,7 @@ class Fighter {
     }
   }
 
+  // Critical: Always resets launchCount back to 0 when waking up!
   enterWakeup(engine, labelText) {
     this.state = 'WAKEUP';
     const wakeSec = (GameConfig.KNOCKDOWN && GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS) || 0.5;
@@ -256,6 +300,7 @@ class Fighter {
     this.vy = 0;
     this.wasHitOnGround = false;
     this.autoWakeupActive = false;
+    this.launchCount = 0; // Always reset launch counter to 0 upon waking up
     if (engine && labelText) {
       engine.addFloatingText(labelText, this.x, this.y - 105, '#00ff88', 18);
     }
@@ -308,7 +353,11 @@ class Fighter {
       this.hasAirAttacked = true;
     }
 
-    // Critical: Uppercut launches caster upward and locks all further air actions until landing on floor!
+    if (moveObj.isAirHeavy || moveKey === '8HP' || moveKey === '8HK') {
+      this.usedAirHeavy = true;
+      this.airNormalsLocked = true;
+    }
+
     if (moveObj.isUppercut) {
       this.usedAirUppercut = true;
       this.airActionsLocked = true;
@@ -317,9 +366,9 @@ class Fighter {
       this.vx = this.facing * (moveObj.selfForwardVX || 3.0);
     }
 
-    if (moveObj.isJumpCrush) {
+    if (moveObj.isJumpCrush || moveObj.isAirFloorSlam) {
       this.vy = moveObj.vy || 9.5;
-      this.vx = this.facing * (moveObj.vx || 4.5);
+      this.vx = this.facing * (moveObj.vx || 3.5);
     }
 
     if (btnTag) {
@@ -360,7 +409,6 @@ class Fighter {
     engine.triggerThrowTechEffect(midX, midY);
   }
 
-  // Helper to detect Right-Down-Right (623) both relative to facing and absolute right
   isUppercutMotion(frameCount) {
     const win = GameConfig.INPUT.MOTION_BUFFER_WINDOW;
     return (
@@ -377,7 +425,6 @@ class Fighter {
       this.lastGrabPressFrame = frameCount;
     }
 
-    // Critical: If caster used Uppercut, all air actions are locked until landing on the floor
     if (isAirborne && this.airActionsLocked) {
       return;
     }
@@ -390,13 +437,13 @@ class Fighter {
       return;
     }
 
-    // 1. Knockdown State (2-Bar Ground Reversal OR QTE Wakeup)
     if (this.state === 'KNOCKDOWN' || this.state === 'OTG_HIT') {
       const revCost = (GameConfig.REVERSAL && GameConfig.REVERSAL.SUPER_COST) || 200;
       if (input.reversalTriggered && this.superMeter >= revCost) {
         this.superMeter -= revCost;
         this.wasHitOnGround = false;
         this.autoWakeupActive = false;
+        this.launchCount = 0; // Reset launch count on Reversal wakeup
         this.startMove('REVERSAL');
         engine.triggerReversalEffect(this);
         return;
@@ -427,8 +474,6 @@ class Fighter {
       return;
     }
 
-    // 2. Critical: Perfect Block Mode (LT / Key H)
-    // Requires >= 100 Super Meter to activate; once drained to 0, it breaks and cannot be used until meter >= 100 again!
     const canEnterPerfectBlock = !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || this.state === 'DASH');
     if (input.perfectBlockHold) {
       if (this.state === 'PERFECT_BLOCK') {
@@ -458,9 +503,10 @@ class Fighter {
     const isGroundNeutral = !isAirborne && (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || this.state === 'DASH');
     const isAirNeutral = isAirborne && ((this.state === 'JUMP' || this.state === 'AIR_DASH') && !this.hasAirAttacked);
     const canCancelNow = this.canCancel();
+    const isAttackReady = (this.attackDelayTimer <= 0 || canCancelNow);
 
-    // 3. Super Arts (Ground Only: 236236+P = LV1, 236236+K = LV2, 214214+P = LV3)
-    if (!isAirborne && (isGroundNeutral || (this.state === 'ATTACK' && this.hitConnected)) && (input.anyPunch || input.anyKick)) {
+    // Super Arts
+    if (isAttackReady && !isAirborne && (isGroundNeutral || (this.state === 'ATTACK' && this.hitConnected)) && (input.anyPunch || input.anyKick)) {
       const doubleMotion = this.motionBuffer.detectSuperMotion(frameCount);
       const gCfg = GameConfig.GAUGES;
 
@@ -490,10 +536,10 @@ class Fighter {
       }
     }
 
-    // 4. Uppercut Skill: Right, Down, Right + Punch (623P on Ground, or 8_623P 1x in Air)
-    if (input.anyPunch && this.isUppercutMotion(frameCount)) {
+    // Uppercut Skill: Right, Down, Right + Punch (623P)
+    if (isAttackReady && input.anyPunch && this.isUppercutMotion(frameCount)) {
       if (isAirborne) {
-        if (!this.usedAirUppercut && (isAirNeutral || canCancelNow) && this.data.moves['8_623P']) {
+        if (!this.usedAirUppercut && !this.airNormalsLocked && (isAirNeutral || canCancelNow) && this.data.moves['8_623P']) {
           this.motionBuffer.clearMotions();
           this.startMove('8_623P');
           engine.addFloatingText("AIR UPPERCUT! (AIR LOCKED)", this.x, this.y - 115, '#00ffcc', 20);
@@ -508,8 +554,7 @@ class Fighter {
       }
     }
 
-    // 5. Exclusive Throw Input (LP + LK)
-    if (input.grabTriggered) {
+    if (isAttackReady && input.grabTriggered) {
       if (isGroundNeutral) {
         this.groundChainList = [];
         this.startMove('GRAB');
@@ -517,11 +562,10 @@ class Fighter {
       return;
     }
 
-    // 6. Ground Dash & Air Dash (1 Air Dash per Jump)
     if (dashTriggered) {
       const isForwardDash = (dashTriggered === 6);
       if (isAirborne) {
-        if ((this.state === 'JUMP' || canCancelNow) && this.airDashCount < this.maxAirDashes) {
+        if (!this.airNormalsLocked && (this.state === 'JUMP' || canCancelNow) && this.airDashCount < this.maxAirDashes) {
           this.airDashCount++;
           this.state = 'AIR_DASH';
           this.dashTimer = 12;
@@ -546,24 +590,36 @@ class Fighter {
       }
     }
 
-    // 7. Attacks (Jump Crush 82HK, Air Combos, Fireballs 214LP/MP/HP, Floor Slam 2HP, Heavy Sweep 2HK, and Ground Chains)
     const btn = input.HP ? 'HP' : input.MP ? 'MP' : input.LP ? 'LP'
               : input.HK ? 'HK' : input.MK ? 'MK' : input.LK ? 'LK' : null;
 
     if (btn) {
-      if (isAirborne && (isAirNeutral || canCancelNow)) {
-        if (input.down && btn === 'HK' && this.data.moves['82HK']) {
+      if (isAirborne) {
+        const canDoDiveSlam = (this.state === 'JUMP' || this.state === 'AIR_DASH' || canCancelNow);
+
+        if (canDoDiveSlam && input.down && btn === 'HP' && this.data.moves['82HP']) {
+          this.startMove('82HP');
+          engine.addFloatingText("AIR FLOOR BOUNCE SLAM!", this.x, this.y - 110, '#00ffcc', 19);
+          return;
+        }
+        if (canDoDiveSlam && input.down && btn === 'HK' && this.data.moves['82HK']) {
           this.startMove('82HK');
           engine.addFloatingText("HEAVY JUMP CRUSH!", this.x, this.y - 110, '#ffaa00', 19);
           return;
         }
-        if (this.data.moves['8' + btn]) {
-          this.startMove('8' + btn);
-          return;
+
+        if (!this.airNormalsLocked && isAttackReady && (isAirNeutral || canCancelNow)) {
+          if ((btn === 'HP' || btn === 'HK') && this.usedAirHeavy) {
+            return;
+          }
+          if (this.data.moves['8' + btn]) {
+            this.startMove('8' + btn);
+            return;
+          }
         }
       }
 
-      if (!isAirborne && (isGroundNeutral || canCancelNow)) {
+      if (!isAirborne && isAttackReady && (isGroundNeutral || canCancelNow)) {
         const specialMotion = this.motionBuffer.detectSpecialMotion(frameCount);
         if (specialMotion) {
           const exactMoveKey = specialMotion + btn;
@@ -601,7 +657,6 @@ class Fighter {
       }
     }
 
-    // 8. Walk, Crouch, Jump Initiation
     const canJumpCancelLauncher = (this.state === 'ATTACK' && this.currentMove && this.currentMove.launcher && this.hitConnected && !this.airActionsLocked);
     if (this.state === 'IDLE' || this.state === 'WALK' || this.state === 'CROUCH' || canJumpCancelLauncher) {
       if (input.up && this.y >= GameConfig.FLOOR_Y) {
@@ -610,6 +665,8 @@ class Fighter {
         this.airDashCount = 0;
         this.usedAirUppercut = false;
         this.airActionsLocked = false;
+        this.usedAirHeavy = false;
+        this.airNormalsLocked = false;
         this.currentMove = null;
         this.currentMoveKey = null;
         this.groundChainList = [];
@@ -640,8 +697,10 @@ class Fighter {
     this.holdingDown = input.down;
 
     if (this.bannerTimer > 0) this.bannerTimer -= dt;
+    if (this.attackDelayTimer > 0) this.attackDelayTimer = Math.max(0, this.attackDelayTimer - dt);
 
-    if (this.launchImmune && (this.state === 'IDLE' || this.state === 'WALK')) {
+    // Critical: Count down the 50-frame Floor Slam Immune timer once the fighter has woken up, then reset to 0
+    if (this.launchImmune && this.state !== 'KNOCKDOWN' && this.state !== 'AIR_HIT') {
       this.launchImmuneTimer -= dt;
       if (this.launchImmuneTimer <= 0) {
         this.launchImmune = false;
@@ -654,7 +713,6 @@ class Fighter {
       if (this.afterimages[i].alpha <= 0) this.afterimages.splice(i, 1);
     }
 
-    // Critical: Drain Super Meter by 0.546 per frame while Perfect Blocking; break out immediately at 0
     if (this.state === 'PERFECT_BLOCK') {
       this.superMeter = Math.max(0, this.superMeter - GameConfig.PERFECT_BLOCK.DRAIN_PER_FRAME * dt);
       if (this.superMeter <= 0) {
@@ -677,6 +735,7 @@ class Fighter {
       this.vx *= 0.8;
       if (this.stateTimer <= 0) {
         this.state = 'IDLE';
+        this.launchCount = 0; // Ensure launchCount is always 0 when standing up from Wakeup
         this.juggleCount = 0;
         this.wallSplatted = false;
         opponent.comboCount = 0;
@@ -702,7 +761,7 @@ class Fighter {
 
       if (!this.qteFailed && this.knockdownElapsed >= qteWinFrames) {
         this.qteFailed = true;
-        engine.addFloatingText("QTE FAILED! +2.0s PENALTY", this.x, this.y - 105, '#ff2255', 18);
+        engine.addFloatingText("QTE FAILED! PENALTY WAIT", this.x, this.y - 105, '#ff2255', 18);
       }
 
       if (this.knockdownElapsed >= totalPenaltyFrames) {
@@ -831,7 +890,7 @@ class Fighter {
       }
 
       if (m.isFloorSlam && prevTimer < m.startup && this.moveTimer >= m.startup) {
-        engine.triggerFloorSlamEffect(this.x + this.facing * 45, GameConfig.FLOOR_Y, this.data.color);
+        engine.triggerFloorSlamEffect(this.x + this.facing * 52, GameConfig.FLOOR_Y, this.data.color);
       }
 
       if (!m.projectile && !this.hasDealtHit && this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active) {
@@ -839,8 +898,6 @@ class Fighter {
         const vDist = Math.abs(opponent.y - this.y);
         const inFront = (opponent.x - this.x) * this.facing >= -20;
 
-        // Critical: If opponent is lying on the ground, ONLY Floor Slam (2HP) or Grounded Hard Kick (2HK / 5HK) can affect them!
-        // Jump + Down + HK (82HK) and all other attacks have zero effect on a downed opponent.
         const targetIsDown = (opponent.state === 'KNOCKDOWN' || opponent.state === 'OTG_HIT');
         const isAllowedGroundedHit = !m.airMove && !m.isJumpCrush && (
           m.isFloorSlam ||
@@ -860,7 +917,8 @@ class Fighter {
         }
       }
 
-      if (this.moveTimer >= m.startup + m.active + m.recovery) {
+      if (this.currentMove && this.moveTimer >= m.startup + m.active + m.recovery) {
+        this.attackDelayTimer = window.FighterCombat.getPostAttackDelayFrames(this.currentMoveKey, m);
         this.state = (this.y < GameConfig.FLOOR_Y) ? 'JUMP' : 'IDLE';
         this.currentMove = null;
         this.currentMoveKey = null;
@@ -892,7 +950,7 @@ class Fighter {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    const AIR_CEILING_Y = 210;
+    const AIR_CEILING_Y = 175;
     if (this.y < AIR_CEILING_Y) {
       this.y = AIR_CEILING_Y;
       if (this.vy < 0) this.vy = 0;
@@ -912,6 +970,8 @@ class Fighter {
       this.airDashCount = 0;
       this.usedAirUppercut = false;
       this.airActionsLocked = false;
+      this.usedAirHeavy = false;
+      this.airNormalsLocked = false;
       this.hasAirAttacked = false;
 
       if (this.state === 'AIR_HIT') {
@@ -921,6 +981,7 @@ class Fighter {
       } else if (this.state === 'JUMP' || this.state === 'AIR_DASH') {
         this.state = 'IDLE';
       } else if (this.state === 'ATTACK' && this.currentMove && (this.currentMove.airMove || this.currentMove.isUppercut)) {
+        this.attackDelayTimer = window.FighterCombat.getPostAttackDelayFrames(this.currentMoveKey, this.currentMove);
         this.state = 'IDLE';
         this.currentMove = null;
         this.currentMoveKey = null;
@@ -944,748 +1005,11 @@ class Fighter {
   }
 
   resolveHit(opponent, move, engine) {
-    this.hasDealtHit = true;
-    this.hitConnected = true;
-
-    const wasTargetDown = (opponent.state === 'KNOCKDOWN' || opponent.state === 'OTG_HIT');
-    const wasTargetAirborne = (opponent.y < GameConfig.FLOOR_Y || opponent.state === 'AIR_HIT');
-
-    // Extra safety check: If opponent is downed, ignore anything that is not Floor Slam or Grounded Hard Kick
-    if (wasTargetDown) {
-      const isAllowedGroundedHit = !move.airMove && !move.isJumpCrush && (
-        move.isFloorSlam ||
-        this.currentMoveKey === '2HP' ||
-        this.currentMoveKey === '2HK' ||
-        this.currentMoveKey === '5HK'
-      );
-      if (!isAllowedGroundedHit) {
-        return;
-      }
-    }
-
-    const applyGroundPushback = (basePush, isBlock = false) => {
-      this.groundPushCount++;
-      const progressivePush = basePush + this.groundPushCount * 1.35;
-      opponent.vx = this.facing * progressivePush;
-      this.vx = -this.facing * (progressivePush * (isBlock ? 0.55 : 0.42));
-    };
-
-    // 1. Perfect Block (LT / Key H)
-    const isOpponentPerfectBlocking = (opponent.state === 'PERFECT_BLOCK' || opponent.holdingPerfectBlock);
-    if (isOpponentPerfectBlocking && !move.isThrow) {
-      opponent.state = 'PERFECT_BLOCK';
-      applyGroundPushback((move.push || 4) * GameConfig.PERFECT_BLOCK.PUSHBACK_MULT, true);
-      const chipDmg = opponent.maxHp * (GameConfig.PERFECT_BLOCK.CHIP_DAMAGE_MAX_HP_PERCENT / 100);
-      opponent.hp = Math.max(1, Number((opponent.hp - chipDmg).toFixed(2)));
-
-      engine.triggerHitstop(7, 3);
-      engine.spawnParticles(opponent.x - this.facing * 22, opponent.y - 60, '#00ff88', 20, 7);
-      engine.addFloatingText(`PERFECT BLOCK (-${chipDmg.toFixed(2)} HP)`, opponent.x, opponent.y - 105, '#00ff88', 18);
-      return;
-    }
-
-    // 2. Throw & Throw Tech Check
-    if (move.isThrow) {
-      if (opponent.y < GameConfig.FLOOR_Y - 10) return;
-
-      const recentGrabDelta = Math.abs(engine.frameCount - opponent.lastGrabPressFrame);
-      const opponentGrabbing = (opponent.state === 'ATTACK' && opponent.currentMove && opponent.currentMove.isThrow);
-      if (opponentGrabbing || recentGrabDelta <= GameConfig.THROW.TECH_WINDOW_FRAMES) {
-        this.triggerThrowTech(opponent, engine);
-        return;
-      }
-
-      this.state = 'THROW_EXEC';
-      this.throwTimer = 0;
-      this.throwTarget = opponent;
-      opponent.state = 'THROWN';
-      opponent.currentMove = null;
-      opponent.vx = 0;
-      opponent.vy = 0;
-      engine.triggerHitstop(5, 3);
-      engine.addFloatingText("GRAB! (TECH WINDOW)", this.x, this.y - 105, '#ffcf33', 18);
-      return;
-    }
-
-    // 3. Normal Directional Guard
-    let normalBlocked = false;
-    const canGuard = (opponent.state === 'IDLE' || opponent.state === 'WALK' || opponent.state === 'CROUCH' || opponent.state === 'BLOCK');
-    if (canGuard && opponent.holdingBack && !move.unblockable && opponent.y >= GameConfig.FLOOR_Y) {
-      if (move.type === 'low' && opponent.holdingDown) normalBlocked = true;
-      else if (move.type === 'overhead' && !opponent.holdingDown) normalBlocked = true;
-      else if (move.type === 'mid' || move.type === 'high') normalBlocked = true;
-    }
-
-    if (normalBlocked) {
-      opponent.state = 'BLOCK';
-      opponent.stateTimer = move.blockstun;
-      applyGroundPushback((move.push || 4) * GameConfig.BLOCK.PUSHBACK_MULT, true);
-
-      const chipDmg = opponent.maxHp * (GameConfig.BLOCK.CHIP_DAMAGE_MAX_HP_PERCENT / 100);
-      opponent.hp = Math.max(1, Number((opponent.hp - chipDmg).toFixed(2)));
-
-      this.superMeter = Math.min(GameConfig.GAUGES.MAX_SUPER, this.superMeter + GameConfig.GAUGES.SUPER_GAIN_ON_BLOCK);
-      engine.triggerHitstop(5, 3);
-      engine.spawnParticles(opponent.x - this.facing * 15, opponent.y - 60, '#44aaff', 12, 5);
-      engine.addFloatingText(`GUARD (-${chipDmg.toFixed(2)} HP)`, opponent.x, opponent.y - 95, '#66ccff', 16);
-      return;
-    }
-
-    // 4. Clean Hit & Air Combo Damage Scaling
-    this.comboCount++;
-    let dmgMult = 1.0;
-    if (wasTargetAirborne || move.airMove) {
-      dmgMult = this.airDamageMultiplier;
-    }
-    const finalDmg = Math.max(6, Math.round(move.dmg * dmgMult));
-    this.comboDamage += finalDmg;
-    opponent.hp = Math.max(0, Number((opponent.hp - finalDmg).toFixed(2)));
-
-    this.superMeter = Math.min(GameConfig.GAUGES.MAX_SUPER, this.superMeter + GameConfig.GAUGES.SUPER_GAIN_ON_HIT);
-    opponent.superMeter = Math.min(GameConfig.GAUGES.MAX_SUPER, opponent.superMeter + GameConfig.GAUGES.SUPER_GAIN_ON_HURT);
-
-    engine.triggerHitstop(move.launcher || move.isUppercut || move.superLevel ? 9 : 5, move.launcher || move.isUppercut ? 8 : 3);
-    engine.spawnParticles((this.x + opponent.x) / 2, opponent.y - 45, this.data.color, 18, 7);
-
-    // 4A. Heavy Jump Crush (82HK / Jump + Down + HK): Only hits standing/crouching opponents -> 1.0s Fixed Knockdown
-    if (move.isJumpCrush && !wasTargetAirborne && !wasTargetDown) {
-      const kdSec = move.fixedKnockdownSec || 1.0;
-      opponent.enterKnockdown('FIXED', kdSec);
-      opponent.vx = this.facing * 3.5;
-      engine.addFloatingText(`JUMP CRUSH! (${kdSec.toFixed(1)}s KNOCKDOWN)`, opponent.x, opponent.y - 110, '#ffaa00', 20);
-      return;
-    }
-
-    // 4B. Heavy Leg Sweep (2HK / Down + HK) on Standing/Crouching Opponent -> QTE Knockdown
-    if (move.isHeavySweep && !wasTargetAirborne && !wasTargetDown) {
-      opponent.enterKnockdown('SWEEP_QTE');
-      applyGroundPushback(move.push || 5, false);
-      engine.addFloatingText("SWEEP KNOCKDOWN! (INPUT QTE)", opponent.x, opponent.y - 110, '#ff4477', 20);
-      return;
-    }
-
-    // 4C. Uppercut Finisher (623P / 8_623P): Locks caster air actions until landing
-    if (move.isUppercut) {
-      opponent.state = 'AIR_HIT';
-      opponent.airComboFramesLeft = 0;
-      opponent.vy = -8.5;
-      opponent.vx = this.facing * 5.5;
-      opponent.y = Math.min(opponent.y, GameConfig.FLOOR_Y - 14);
-      engine.addFloatingText("UPPERCUT FINISH!!", opponent.x, opponent.y - 115, '#00ffcc', 22);
-      return;
-    }
-
-    // 4D. Floor Slam (2HP) & 3-Step Launcher Nerf Check
-    const canLaunchTarget = move.launcher && !opponent.launchImmune && opponent.launchCount < 2;
-    if (move.launcher && !canLaunchTarget && !wasTargetAirborne) {
-      engine.addFloatingText("LAUNCH IMMUNE! (NORMAL HIT)", opponent.x, opponent.y - 115, '#ffaa00', 18);
-      if (wasTargetDown) {
-        opponent.state = 'OTG_HIT';
-        opponent.wasHitOnGround = true;
-        opponent.stateTimer = 20;
-        applyGroundPushback(3.5, false);
-        return;
-      } else {
-        opponent.state = 'HIT';
-        opponent.stateTimer = move.hitstun || 26;
-        applyGroundPushback(move.push || 4, false);
-        return;
-      }
-    }
-
-    // 4E. Grounded Hard Kick OTG Strike (2HK / 5HK on Downed Opponent)
-    if (wasTargetDown && !canLaunchTarget) {
-      opponent.state = 'OTG_HIT';
-      opponent.wasHitOnGround = true;
-      opponent.stateTimer = 24;
-      applyGroundPushback(3.5, false);
-      engine.addFloatingText(`HARD KICK OTG! (-${finalDmg})`, opponent.x, opponent.y - 90, '#ffaa00', 20);
-      return;
-    }
-
-    // 4F. Floor Slam (2HP) Bounce Launch
-    if (canLaunchTarget && !wasTargetAirborne) {
-      opponent.launchCount++;
-      opponent.state = 'AIR_HIT';
-      opponent.juggleCount = 1;
-      opponent.airComboMaxFrames = this.maxAirComboFrames;
-      opponent.airComboFramesLeft = this.maxAirComboFrames;
-
-      opponent.vy = -7.2;
-      opponent.vx = this.facing * 1.2;
-      opponent.y = Math.min(opponent.y, GameConfig.FLOOR_Y - 14);
-
-      const bounceTag = move.groundBounce ? "FLOOR SLAM BOUNCE!" : "LAUNCH!";
-      const launchLabel = opponent.launchCount === 1
-        ? `${bounceTag} 1/2 (${(this.maxAirComboFrames / 60).toFixed(1)}s AIR)`
-        : `${bounceTag} 2/2 (FAST WAKEUP NEXT)`;
-      engine.addFloatingText(launchLabel, opponent.x, opponent.y - 110, '#00ffcc', 20);
-      return;
-    }
-
-    // 4G. Mid-Air Combo Hit
-    if (wasTargetAirborne) {
-      opponent.juggleCount++;
-      if (opponent.airComboFramesLeft > 0) {
-        opponent.state = 'AIR_HIT';
-
-        const targetHoverY = 235;
-        const heightDiff = opponent.y - targetHoverY;
-        const controlledLift = heightDiff > 0 ? -4.2 : -2.4;
-
-        opponent.vy = controlledLift;
-        opponent.vx = this.facing * 0.5;
-
-        if (this.y < GameConfig.FLOOR_Y && !move.isJumpCrush) {
-          this.vy = controlledLift;
-          this.vx = this.facing * 0.5;
-          this.hasAirAttacked = false;
-        }
-      } else {
-        opponent.vy = 6.5;
-        opponent.vx = this.facing * 4.5;
-        engine.addFloatingText("AIR TIME LIMIT!", opponent.x, opponent.y - 105, '#ff4477', 20);
-      }
-      return;
-    }
-
-    // 4H. Knockdown Move
-    if (move.knockdown) {
-      opponent.enterKnockdown('QTE');
-      applyGroundPushback(move.push || 5, false);
-      return;
-    }
-
-    // 4I. Standard Ground Hit
-    opponent.state = 'HIT';
-    opponent.stateTimer = move.hitstun;
-    applyGroundPushback(move.push || 3.2, false);
-  }
-
-  drawTwoSegmentLimb(ctx, rootX, rootY, upperLen, lowerLen, upperAngle, lowerAngle, w, fill, stroke, endBoxW, endBoxH) {
-    ctx.save();
-    ctx.translate(rootX, rootY);
-    ctx.rotate(upperAngle);
-
-    ctx.fillStyle = fill;
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = 2;
-    ctx.fillRect(-w / 2, 0, w, upperLen);
-    ctx.strokeRect(-w / 2, 0, w, upperLen);
-
-    ctx.translate(0, upperLen);
-    ctx.fillStyle = stroke;
-    ctx.fillRect(-w * 0.4, -3, w * 0.8, 6);
-
-    ctx.rotate(lowerAngle);
-    ctx.fillStyle = fill;
-    ctx.fillRect(-w * 0.45, 0, w * 0.9, lowerLen);
-    ctx.strokeRect(-w * 0.45, 0, w * 0.9, lowerLen);
-
-    ctx.fillStyle = stroke;
-    ctx.fillRect(-endBoxW / 2 + 2, lowerLen - 2, endBoxW, endBoxH);
-    ctx.strokeRect(-endBoxW / 2 + 2, lowerLen - 2, endBoxW, endBoxH);
-
-    ctx.restore();
-  }
-
-  computePose() {
-    const breath = Math.sin(this.animTick * 0.1) * 0.06;
-    const pose = {
-      hipY: -48,
-      torsoTilt: 0,
-      headTilt: 0,
-      fShoulder: -0.45 + breath, fElbow: -1.1,
-      bShoulder: 0.25 - breath,  bElbow: -1.0,
-      fHip: -0.18,               fKnee: 0.22,
-      bHip: 0.22,                bKnee: 0.18
-    };
-
-    if (this.state === 'WALK') {
-      const cycle = Math.sin(this.animTick * 0.22);
-      pose.hipY = -48 + Math.abs(cycle) * 3;
-      pose.fHip = cycle * 0.55;
-      pose.fKnee = cycle > 0 ? 0.45 : 0.15;
-      pose.bHip = -cycle * 0.55;
-      pose.bKnee = cycle < 0 ? 0.45 : 0.15;
-      pose.fShoulder = -0.35 - cycle * 0.35;
-      pose.bShoulder = 0.2 + cycle * 0.35;
-    } else if (this.state === 'DASH' || this.state === 'AIR_DASH') {
-      const forwardDash = (this.dashDir === this.facing);
-      pose.torsoTilt = forwardDash ? 0.42 : -0.35;
-      pose.hipY = this.state === 'AIR_DASH' ? -52 : -44;
-      pose.fHip = forwardDash ? -0.8 : 0.55;
-      pose.fKnee = 0.7;
-      pose.bHip = forwardDash ? 0.85 : -0.65;
-      pose.bKnee = 0.55;
-      pose.fShoulder = 0.45;
-      pose.bShoulder = 0.65;
-    } else if (this.state === 'THROW_TECH') {
-      const ratio = this.stateTimer / GameConfig.THROW.TECH_STATE_FRAMES;
-      if (ratio > 0.6) {
-        pose.torsoTilt = 0.25;
-        pose.fShoulder = -Math.PI * 0.48; pose.fElbow = -0.15;
-        pose.bShoulder = -Math.PI * 0.45; pose.bElbow = -0.15;
-        pose.fHip = -0.35; pose.fKnee = 0.4;
-      } else {
-        pose.hipY = -42;
-        pose.torsoTilt = -0.28;
-        pose.fShoulder = -0.25; pose.fElbow = -0.85;
-        pose.bShoulder = 0.65;  pose.bElbow = -0.75;
-        pose.fHip = -0.55;      pose.fKnee = 0.75;
-        pose.bHip = 0.45;       pose.bKnee = 0.55;
-      }
-    } else if (this.state === 'VICTORY') {
-      pose.hipY = -48;
-      pose.torsoTilt = -0.12;
-      pose.fShoulder = -Math.PI * 0.88; pose.fElbow = -0.15;
-      pose.bShoulder = 0.35;            pose.bElbow = -1.1;
-      pose.fHip = -0.22;                pose.fKnee = 0.15;
-      pose.bHip = 0.25;                 pose.bKnee = 0.15;
-    } else if (this.state === 'CROUCH') {
-      pose.hipY = -30;
-      pose.torsoTilt = 0.18;
-      pose.fHip = -0.95; pose.fKnee = 1.45;
-      pose.bHip = -0.75; pose.bKnee = 1.35;
-      pose.fShoulder = -0.55; pose.fElbow = -1.25;
-    } else if (this.state === 'JUMP') {
-      pose.hipY = -52;
-      pose.fHip = -0.85; pose.fKnee = 1.25;
-      pose.bHip = -0.45; pose.bKnee = 1.1;
-      pose.fShoulder = -0.7; pose.fElbow = -0.9;
-      pose.bShoulder = 0.4;  pose.bElbow = -0.8;
-    } else if (this.state === 'BLOCK' || this.state === 'PERFECT_BLOCK') {
-      pose.hipY = -45;
-      pose.torsoTilt = -0.12;
-      pose.fShoulder = -0.95; pose.fElbow = -1.35;
-      pose.bShoulder = -0.75; pose.bElbow = -1.25;
-      pose.fHip = -0.3; pose.fKnee = 0.35;
-      pose.bHip = 0.35; pose.bKnee = 0.3;
-    } else if (this.state === 'HIT' || this.state === 'AIR_HIT') {
-      pose.torsoTilt = -0.42;
-      pose.headTilt = -0.3;
-      pose.fShoulder = -1.1; pose.fElbow = -0.3;
-      pose.bShoulder = -0.8; pose.bElbow = -0.2;
-      pose.fHip = -0.4; pose.bHip = 0.3;
-    } else if (this.state === 'KNOCKDOWN' || this.state === 'OTG_HIT') {
-      const otgBounce = (this.state === 'OTG_HIT') ? Math.sin(this.animTick * 0.8) * 6 : 0;
-      pose.hipY = -12 - Math.abs(otgBounce);
-      pose.torsoTilt = -Math.PI / 2 + (this.state === 'OTG_HIT' ? 0.18 : 0);
-      pose.fShoulder = -0.4; pose.fElbow = -0.4;
-      pose.bShoulder = 0.2;  pose.bElbow = -0.2;
-      pose.fHip = 0.1;       pose.fKnee = 0.25;
-      pose.bHip = -0.15;     pose.bKnee = 0.35;
-    } else if (this.state === 'WAKEUP') {
-      const totalWake = Math.round(GameConfig.KNOCKDOWN.WAKEUP_DURATION_SECONDS * 60);
-      const progress = Math.max(0, Math.min(1, 1 - (this.stateTimer / totalWake)));
-
-      pose.hipY = -12 - progress * 36;
-      pose.torsoTilt = (-Math.PI / 2) * (1 - progress) + Math.sin(progress * Math.PI) * 0.35;
-      pose.fShoulder = (1 - progress) * 0.8 - progress * 0.45;
-      pose.fElbow = -1.1 * progress;
-      pose.bShoulder = (1 - progress) * 0.6 + progress * 0.25;
-      pose.bElbow = -1.0 * progress;
-      pose.fHip = -1.1 * Math.sin(progress * Math.PI) - 0.18 * progress;
-      pose.fKnee = 1.5 * Math.sin(progress * Math.PI) + 0.22 * progress;
-      pose.bHip = -0.6 * (1 - progress) + 0.22 * progress;
-      pose.bKnee = 1.1 * (1 - progress) + 0.18 * progress;
-    } else if (this.state === 'ATTACK' && this.currentMove) {
-      const m = this.currentMove;
-      const isStartup = this.moveTimer < m.startup;
-      const isActive = this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active;
-      const phase = isStartup ? (this.moveTimer / m.startup) * 0.35 : (isActive ? 1.0 : 0.45);
-
-      if (m.anim === 'LEAD_JAB' || m.anim === 'JAB') {
-        pose.torsoTilt = 0.12 * phase;
-        if (this.altLimb) {
-          pose.bShoulder = -Math.PI / 2 * phase;
-          pose.bElbow = -0.05 * phase;
-        } else {
-          pose.fShoulder = -Math.PI / 2 * phase - 0.3 * (1 - phase);
-          pose.fElbow = -0.08 * phase - 1.1 * (1 - phase);
-        }
-      } else if (m.anim === 'STEP_STRAIGHT' || m.anim === 'STRAIGHT') {
-        pose.torsoTilt = 0.24 * phase;
-        pose.bShoulder = -Math.PI / 2 * phase + 0.2 * (1 - phase);
-        pose.bElbow = -0.05 * phase - 1.0 * (1 - phase);
-        pose.fShoulder = 0.4 * phase;
-        pose.fHip = -0.35 * phase;
-      } else if (m.anim === 'OVERHAND_HOOK' || m.anim === 'HOOK') {
-        pose.torsoTilt = isStartup ? -0.2 : 0.34 * phase;
-        pose.bShoulder = isStartup ? -2.1 : (-Math.PI * 0.45) * phase;
-        pose.bElbow = -0.15 * phase;
-        pose.fShoulder = 0.5 * phase;
-      } else if (m.anim === 'CALF_KICK' || m.anim === 'LOW_KICK') {
-        pose.torsoTilt = -0.15 * phase;
-        pose.fHip = -Math.PI * 0.38 * phase;
-        pose.fKnee = 0.05 * phase;
-      } else if (m.anim === 'SIDE_THRUST_KICK' || m.anim === 'MID_KICK') {
-        pose.torsoTilt = -0.28 * phase;
-        pose.fHip = -Math.PI * 0.52 * phase;
-        pose.fKnee = 0.04 * phase;
-      } else if (m.anim === 'HIGH_HOOK_KICK' || m.anim === 'HIGH_KICK') {
-        pose.torsoTilt = -0.40 * phase;
-        pose.bHip = -Math.PI * 0.70 * phase;
-        pose.bKnee = 0.04 * phase;
-      } else if (m.anim === 'CROUCH_JAB') {
-        pose.hipY = -30;
-        pose.fHip = -0.95; pose.fKnee = 1.45;
-        pose.bHip = -0.75; pose.bKnee = 1.35;
-        pose.fShoulder = -Math.PI / 2 * phase;
-        pose.fElbow = -0.08 * phase;
-      } else if (m.anim === 'CROUCH_GUT_PUNCH') {
-        pose.hipY = -30;
-        pose.torsoTilt = 0.22 * phase;
-        pose.fHip = -0.95; pose.fKnee = 1.45;
-        pose.bHip = -0.75; pose.bKnee = 1.35;
-        pose.bShoulder = -Math.PI * 0.46 * phase;
-        pose.bElbow = -0.05 * phase;
-      } else if (m.anim === 'CROUCH_ANKLE_KICK' || m.anim === 'LOW_SPIN_KICK') {
-        pose.hipY = -26;
-        pose.torsoTilt = -0.2;
-        pose.bHip = -0.9; pose.bKnee = 1.4;
-        pose.fHip = -Math.PI * 0.42 * phase;
-        pose.fKnee = 0.05;
-      } else if (m.anim === 'FLOOR_SLAM') {
-        if (isStartup) {
-          pose.hipY = -50;
-          pose.torsoTilt = -0.25;
-          pose.fShoulder = -2.5; pose.fElbow = -0.4;
-          pose.bShoulder = -2.4; pose.bElbow = -0.4;
-        } else {
-          pose.hipY = -26;
-          pose.torsoTilt = 0.68;
-          pose.fHip = -1.05; pose.fKnee = 1.5;
-          pose.bHip = -0.65; pose.bKnee = 1.3;
-          pose.fShoulder = -0.22; pose.fElbow = 0.05;
-          pose.bShoulder = -0.18; pose.bElbow = 0.05;
-        }
-      } else if (m.anim === 'DRAGON_SWEEP' || m.anim === 'SWEEP') {
-        pose.hipY = -20;
-        pose.torsoTilt = -0.38;
-        pose.fHip = -1.1; pose.fKnee = 1.55;
-        pose.bHip = -Math.PI * 0.46 * phase;
-        pose.bKnee = 0.02;
-        pose.fShoulder = 0.4; pose.bShoulder = -0.5;
-      } else if (m.anim === 'FIREBALL_CAST' || m.anim === 'PROJECTILE') {
-        pose.torsoTilt = isStartup ? -0.22 : 0.28 * phase;
-        pose.fShoulder = isStartup ? 0.6 : -Math.PI / 2 * phase;
-        pose.fElbow = 0;
-        pose.bShoulder = isStartup ? 0.7 : -Math.PI / 2 * phase;
-        pose.bElbow = 0;
-        pose.fHip = -0.42; pose.fKnee = 0.45;
-      } else if (m.anim === 'RISING_UPPERCUT' || m.anim === 'UPPERCUT') {
-        pose.hipY = -52;
-        pose.torsoTilt = -0.24 * phase;
-        pose.bShoulder = -Math.PI * 0.88 * phase;
-        pose.bElbow = -0.10 * phase;
-        pose.fShoulder = 0.55; pose.fElbow = -1.2;
-        pose.fHip = -0.95; pose.fKnee = 1.4;
-        pose.bHip = 0.25;  pose.bKnee = 0.15;
-      } else if (m.anim === 'JUMP_CRUSH_STOMP') {
-        pose.hipY = -44;
-        pose.torsoTilt = 0.32;
-        pose.fHip = -0.35; pose.fKnee = 0.15;
-        pose.bHip = -0.25; pose.bKnee = 0.15;
-        pose.fShoulder = -2.1; pose.fElbow = -0.5;
-        pose.bShoulder = -2.0; pose.bElbow = -0.5;
-      } else if (m.anim === 'GRAB_ATTEMPT') {
-        pose.torsoTilt = 0.22 * phase;
-        pose.fShoulder = -Math.PI / 2 * phase; pose.fElbow = 0;
-        pose.bShoulder = -Math.PI / 2 * phase; pose.bElbow = 0;
-      } else if (m.superLevel) {
-        pose.torsoTilt = 0.32;
-        pose.fShoulder = -Math.PI / 2; pose.fElbow = 0;
-        pose.bShoulder = -Math.PI / 2; pose.bElbow = 0;
-        pose.fHip = -0.45; pose.bHip = 0.45;
-      } else if (m.anim === 'AIR_JAB') {
-        pose.hipY = -52;
-        pose.torsoTilt = 0.22 * phase;
-        pose.fHip = -0.9; pose.fKnee = 1.35;
-        pose.bHip = -0.5; pose.bKnee = 1.15;
-        pose.fShoulder = (-Math.PI * 0.35) * phase - 0.5 * (1 - phase);
-        pose.fElbow = -0.05 * phase - 0.9 * (1 - phase);
-      } else if (m.anim === 'AIR_CROSS' || m.anim === 'AIR_STRAIGHT') {
-        pose.hipY = -52;
-        pose.torsoTilt = 0.28 * phase;
-        pose.fHip = -0.75; pose.fKnee = 1.25;
-        pose.bHip = -0.65; pose.bKnee = 1.25;
-        pose.bShoulder = (-Math.PI * 0.48) * phase;
-        pose.bElbow = -0.05 * phase;
-      } else if (m.anim === 'AIR_HAMMER_SMASH' || m.anim === 'AIR_HEAVY_PUNCH') {
-        pose.hipY = -50;
-        pose.torsoTilt = isStartup ? -0.25 : 0.42 * phase;
-        pose.fHip = -0.95; pose.fKnee = 1.4;
-        pose.bHip = -0.4;  pose.bKnee = 1.1;
-        pose.bShoulder = isStartup ? -2.2 : (-Math.PI * 0.30) * phase;
-        pose.bElbow = isStartup ? -0.8 : -0.05;
-      } else if (m.anim === 'AIR_KNEE_DROP' || m.anim === 'AIR_LOW_KICK') {
-        pose.hipY = -50;
-        pose.torsoTilt = 0.15;
-        pose.fHip = (-Math.PI * 0.34) * phase - 0.8 * (1 - phase);
-        pose.fKnee = 0.45 * phase + 1.2 * (1 - phase);
-        pose.bHip = -0.45; pose.bKnee = 1.25;
-        pose.fShoulder = -0.6; pose.fElbow = -1.1;
-      } else if (m.anim === 'AIR_SIDE_BLADE' || m.anim === 'AIR_MID_KICK') {
-        pose.hipY = -52;
-        pose.torsoTilt = -0.28 * phase;
-        pose.fHip = (-Math.PI * 0.46) * phase - 0.7 * (1 - phase);
-        pose.fKnee = 0.04 * phase + 1.1 * (1 - phase);
-        pose.bHip = -0.85; pose.bKnee = 1.45;
-      } else if (m.anim === 'AIR_WHEEL_KICK' || m.anim === 'AIR_HEAVY_KICK') {
-        pose.hipY = -50;
-        pose.torsoTilt = 0.26 * phase;
-        pose.fHip = -0.95; pose.fKnee = 1.45;
-        pose.bHip = (-Math.PI * 0.35) * phase - 0.5 * (1 - phase);
-        pose.bKnee = 0.02 * phase + 1.1 * (1 - phase);
-      }
-    }
-
-    return pose;
-  }
-
-  drawKnockdownQTE(ctx) {
-    if (this.state !== 'KNOCKDOWN') return;
-
-    ctx.save();
-    const boxY = this.y - 102;
-
-    if (this.autoWakeupActive) {
-      const barW = 148;
-      const ratio = Math.max(0, this.autoWakeupFramesLeft / 30);
-      ctx.fillStyle = '#111624';
-      ctx.fillRect(this.x - barW / 2, boxY - 8, barW, 8);
-      ctx.fillStyle = '#00ff88';
-      ctx.fillRect(this.x - barW / 2, boxY - 8, barW * ratio, 8);
-
-      ctx.font = "900 11px monospace";
-      ctx.fillStyle = '#00ff88';
-      ctx.textAlign = 'center';
-      ctx.fillText(this.autoWakeupLabel || "AUTO WAKEUP (1.0s)", this.x, boxY - 14);
-      ctx.restore();
-      return;
-    }
-
-    const qteWinFrames = Math.round(GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS * 60);
-    const totalPenaltyFrames = Math.round((GameConfig.KNOCKDOWN.QTE_WINDOW_SECONDS + GameConfig.KNOCKDOWN.PENALTY_ADD_SECONDS) * 60);
-
-    const spacing = 44;
-    const startX = this.x - spacing;
-    for (let i = 0; i < this.qteSequence.length; i++) {
-      const bx = startX + i * spacing;
-      const done = i < this.qteIndex;
-      const active = i === this.qteIndex && !this.qteFailed;
-
-      ctx.fillStyle = done ? '#00ff88' : (this.qteFailed ? '#3d1522' : (active ? '#ffcf33' : '#161f33'));
-      ctx.strokeStyle = done ? '#ffffff' : (active ? '#ffffff' : '#3a4b78');
-      ctx.lineWidth = active ? 2.5 : 1.5;
-      ctx.fillRect(bx - 18, boxY - 22, 36, 22);
-      ctx.strokeRect(bx - 18, boxY - 22, 36, 22);
-
-      ctx.font = "900 11px monospace";
-      ctx.fillStyle = (done || active) ? '#050811' : '#9cb1d4';
-      ctx.textAlign = 'center';
-      ctx.fillText(this.qteSequence[i], bx, boxY - 7);
-    }
-
-    const barW = 128;
-    ctx.fillStyle = '#111624';
-    ctx.fillRect(this.x - barW / 2, boxY + 5, barW, 7);
-
-    if (!this.qteFailed) {
-      const ratio = Math.max(0, 1 - (this.knockdownElapsed / qteWinFrames));
-      ctx.fillStyle = '#00f0ff';
-      ctx.fillRect(this.x - barW / 2, boxY + 5, barW * ratio, 7);
-    } else {
-      const remSec = Math.max(0, (totalPenaltyFrames - this.knockdownElapsed) / 60).toFixed(1);
-      const ratio = Math.max(0, 1 - (this.knockdownElapsed / totalPenaltyFrames));
-      ctx.fillStyle = '#ff2255';
-      ctx.fillRect(this.x - barW / 2, boxY + 5, barW * ratio, 7);
-
-      ctx.font = "800 11px monospace";
-      ctx.fillStyle = '#ff4477';
-      ctx.textAlign = 'center';
-      ctx.fillText(`PENALTY WAIT: ${remSec}s`, this.x, boxY - 28);
-    }
-
-    const revCost = (GameConfig.REVERSAL && GameConfig.REVERSAL.SUPER_COST) || 200;
-    if (this.superMeter >= revCost) {
-      ctx.font = "800 10px monospace";
-      ctx.fillStyle = '#ff0066';
-      ctx.textAlign = 'center';
-      ctx.fillText("PRESS LB / [P] FOR 2-BAR REVERSAL!", this.x, boxY + 24);
-    }
-
-    ctx.restore();
+    window.FighterCombat.resolveHit(this, opponent, move, engine);
   }
 
   draw(ctx) {
-    for (const img of this.afterimages) {
-      ctx.save();
-      ctx.translate(img.x, img.y);
-      ctx.scale(img.facing, 1);
-      ctx.fillStyle = this.data.color;
-      ctx.globalAlpha = img.alpha * 0.35;
-      ctx.fillRect(-20, -90, 40, 90);
-      ctx.restore();
-    }
-
-    ctx.save();
-    ctx.translate(this.x, this.y);
-
-    const groundOffset = GameConfig.FLOOR_Y - this.y;
-    const shadowScale = Math.max(0.35, 1 - groundOffset / 260);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(-30 * shadowScale, groundOffset - 4, 60 * shadowScale, 8);
-
-    ctx.scale(this.facing, 1);
-
-    const p = this.data.proportions || { torsoW: 34, torsoH: 44, upperArmL: 22, lowerArmL: 22, upperLegL: 24, lowerLegL: 24 };
-    const pose = this.computePose();
-
-    let frontStroke = this.data.color;
-    let frontFill = '#1b263e';
-    const backStroke = '#3b4f78';
-    const backFill = '#101726';
-
-    if (this.state === 'HIT' || this.state === 'AIR_HIT' || this.state === 'OTG_HIT') {
-      frontStroke = '#ff2255';
-      frontFill = '#4a1528';
-    } else if (this.state === 'PERFECT_BLOCK' || this.state === 'WAKEUP') {
-      frontStroke = '#00ff88';
-      frontFill = '#113828';
-    } else if (this.state === 'THROW_TECH') {
-      frontStroke = '#ffdf33';
-      frontFill = '#3b3212';
-    } else if (this.state === 'BLOCK') {
-      frontStroke = '#44aaff';
-    }
-
-    this.drawTwoSegmentLimb(
-      ctx, -6, pose.hipY, p.upperLegL, p.lowerLegL,
-      pose.bHip, pose.bKnee, 13, backFill, backStroke, 16, 7
-    );
-
-    this.drawTwoSegmentLimb(
-      ctx, 6, pose.hipY, p.upperLegL, p.lowerLegL,
-      pose.fHip, pose.fKnee, 14, frontFill, frontStroke, 17, 8
-    );
-
-    ctx.save();
-    ctx.translate(0, pose.hipY);
-    ctx.rotate(pose.torsoTilt);
-
-    this.drawTwoSegmentLimb(
-      ctx, -8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
-      pose.bShoulder, pose.bElbow, 11, backFill, backStroke, 13, 11
-    );
-
-    ctx.fillStyle = '#121a2d';
-    ctx.strokeStyle = frontStroke;
-    ctx.lineWidth = 2;
-    ctx.fillRect(-p.torsoW / 2, -8, p.torsoW, 12);
-    ctx.strokeRect(-p.torsoW / 2, -8, p.torsoW, 12);
-
-    ctx.fillStyle = frontFill;
-    ctx.strokeStyle = frontStroke;
-    ctx.lineWidth = 2.5;
-    ctx.fillRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
-    ctx.strokeRect(-p.torsoW / 2, -p.torsoH, p.torsoW, p.torsoH - 6);
-
-    ctx.save();
-    ctx.translate(0, -p.torsoH - 4);
-    ctx.rotate(pose.headTilt);
-    const headW = 24;
-    const headH = 22;
-    ctx.fillStyle = '#182238';
-    ctx.strokeStyle = frontStroke;
-    ctx.fillRect(-headW / 2, -headH, headW, headH);
-    ctx.strokeRect(-headW / 2, -headH, headW, headH);
-    ctx.fillStyle = frontStroke;
-    ctx.fillRect(2, -headH + 5, 12, 6);
-    ctx.restore();
-
-    this.drawTwoSegmentLimb(
-      ctx, 8, -p.torsoH + 6, p.upperArmL, p.lowerArmL,
-      pose.fShoulder, pose.fElbow, 12, frontFill, frontStroke, 14, 12
-    );
-
-    ctx.restore();
-
-    if (this.state === 'PERFECT_BLOCK') {
-      ctx.strokeStyle = '#00ff88';
-      ctx.fillStyle = 'rgba(0, 255, 136, 0.16)';
-      ctx.lineWidth = 3;
-      ctx.fillRect(-38, -110, 76, 110);
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(-38, -110, 76, 110);
-      ctx.setLineDash([]);
-    }
-
-    if (this.state === 'ATTACK' && this.currentMove) {
-      const m = this.currentMove;
-      const isStartup = this.moveTimer < m.startup;
-      const isActive = this.moveTimer >= m.startup && this.moveTimer < m.startup + m.active;
-
-      const hitX = 18;
-      const hitW = m.reach - 18;
-      const hitY = m.boxY || -70;
-      const hitH = m.boxH || 28;
-
-      if (isStartup) {
-        ctx.strokeStyle = '#ffdf33';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
-        ctx.strokeRect(hitX, hitY, hitW, hitH);
-        ctx.setLineDash([]);
-      } else if (isActive) {
-        ctx.fillStyle = m.isReversal ? 'rgba(255, 0, 102, 0.65)' : (m.superLevel ? 'rgba(255, 215, 0, 0.65)' : 'rgba(255, 0, 68, 0.50)');
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.fillRect(hitX, hitY, hitW, hitH);
-        ctx.strokeRect(hitX, hitY, hitW, hitH);
-
-        if (m.superLevel === 1) {
-          ctx.fillStyle = this.data.color;
-          ctx.fillRect(hitX, hitY + 6, hitW + 45, hitH - 12);
-        } else if (m.superLevel === 2) {
-          ctx.strokeStyle = '#00ffaa';
-          ctx.lineWidth = 4;
-          ctx.strokeRect(hitX - 10, hitY - 25, hitW + 30, hitH + 50);
-        } else if (m.superLevel === 3) {
-          ctx.fillStyle = 'rgba(255, 0, 102, 0.45)';
-          ctx.fillRect(hitX - 20, -140, hitW + 90, 140);
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 4;
-          ctx.strokeRect(hitX - 20, -140, hitW + 90, 140);
-        }
-      }
-    }
-
-    ctx.restore();
-
-    if (this.state === 'KNOCKDOWN') {
-      this.drawKnockdownQTE(ctx);
-    } else {
-      ctx.save();
-      ctx.font = "700 11px monospace";
-      ctx.fillStyle = this.state === 'WAKEUP' ? '#00ff88' : '#cbd5e1';
-      ctx.textAlign = 'center';
-      if (this.airActionsLocked && this.y < GameConfig.FLOOR_Y) {
-        ctx.fillStyle = '#ff4477';
-        ctx.fillText(`[UPPERCUT LOCK - FALLING]`, this.x, this.y - 118);
-      } else if (this.state === 'AIR_HIT' && this.airComboFramesLeft > 0) {
-        const airSec = (this.airComboFramesLeft / 60).toFixed(1);
-        ctx.fillStyle = '#00ffcc';
-        ctx.fillText(`[AIR COMBO: ${airSec}s | LAUNCH ${this.launchCount}/2]`, this.x, this.y - 118);
-      } else if (this.launchImmune) {
-        ctx.fillStyle = '#ffaa00';
-        ctx.fillText(`[${this.state} | LAUNCH IMMUNE]`, this.x, this.y - 118);
-      } else {
-        ctx.fillText(`[${this.state}]`, this.x, this.y - 118);
-      }
-      ctx.restore();
-    }
+    window.FighterPose.drawFighter(ctx, this);
   }
 }
 
